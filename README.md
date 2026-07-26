@@ -1,7 +1,3 @@
-<p align="center">
-  <img src="docs/assets/banner.png" alt="Clocktopus" width="720">
-</p>
-
 # Clocktopus 🐙
 
 *Eight arms, all billable.*
