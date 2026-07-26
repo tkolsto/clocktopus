@@ -1,0 +1,32 @@
+name: Clocktopus
+options:
+  bundleIdPrefix: no.kolsto
+  deploymentTarget:
+    macOS: "13.0"
+packages:
+  ClocktopusCore:
+    path: ../Core
+targets:
+  Clocktopus:
+    type: application
+    platform: macOS
+    sources: [Sources, Resources]
+    dependencies:
+      - package: ClocktopusCore
+    entitlements:
+      path: Clocktopus.entitlements
+      properties:
+        # Required to send Apple Events (browser active-tab query) under the
+        # hardened runtime. macOS still prompts for each target app.
+        com.apple.security.automation.apple-events: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: no.kolsto.clocktopus
+        GENERATE_INFOPLIST_FILE: YES
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        INFOPLIST_KEY_LSUIElement: YES   # menubar app: no Dock icon
+        INFOPLIST_KEY_NSHumanReadableCopyright: ""
+        INFOPLIST_KEY_NSAppleEventsUsageDescription: "Clocktopus reads the active tab URL of your frontmost browser to match your time to the right project."
+        SWIFT_VERSION: "5.10"
+        CODE_SIGN_STYLE: Automatic
+        ENABLE_HARDENED_RUNTIME: YES

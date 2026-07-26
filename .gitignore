@@ -1,0 +1,17 @@
+.DS_Store
+.build/
+*.xcodeproj
+xcuserdata/
+DerivedData/
+.swiftpm/
+
+# xcodebuild derived data (custom -derivedDataPath)
+build/
+App/build/
+
+# XcodeGen-generated entitlements (derived from App/project.yml)
+App/Clocktopus.entitlements
+
+# Internal build-history docs — kept local, not for the public repo
+docs/specs/
+docs/plans/
