@@ -14,6 +14,8 @@ struct PreferencesView: View {
     @State private var includeExact = false
     @State private var browserDetection = false
     @State private var detectionLeadMinutes = 2
+    @State private var switchLeadMinutes = 10
+    @State private var idleAutoStopMinutes = 120
     @State private var dayStartHour = 4
 
     var body: some View {
@@ -43,6 +45,26 @@ struct PreferencesView: View {
                                                   state.setClockInLeadMinutes(Double($0)) }),
                             in: 1...15)
                     Text("How long you must stay on a project before it's detected. Lower = snappier, higher = fewer stray suggestions.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                VStack(alignment: .leading, spacing: 2) {
+                    Stepper("Switch suggestion after: \(switchLeadMinutes) min",
+                            value: Binding(get: { switchLeadMinutes },
+                                           set: { switchLeadMinutes = $0
+                                                  state.setSwitchLeadMinutes(Double($0)) }),
+                            in: 2...30)
+                    Text("While a timer runs, how long another project must dominate before Clocktopus suggests switching.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                VStack(alignment: .leading, spacing: 2) {
+                    Stepper(idleAutoStopMinutes == 0
+                            ? "Auto clock-out when idle: never"
+                            : "Auto clock-out when idle: \(idleAutoStopMinutes) min",
+                            value: Binding(get: { idleAutoStopMinutes },
+                                           set: { idleAutoStopMinutes = $0
+                                                  state.setIdleAutoStopMinutes($0) }),
+                            in: 0...480, step: 15)
+                    Text("Idle longer than this stops the running timer at the moment you went idle, so an overnight never bills. Shorter breaks just ask on your return. 0 = never auto-stop.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 Stepper("Nudges per hour: \(nudgesPerHour)",
@@ -123,6 +145,8 @@ struct PreferencesView: View {
             includeExact = state.effectiveIncludeExactColumn
             browserDetection = state.browserDetectionEnabled
             detectionLeadMinutes = max(1, Int(state.effectiveClockInLeadMinutes.rounded()))
+            switchLeadMinutes = max(2, Int(state.effectiveSwitchLeadMinutes.rounded()))
+            idleAutoStopMinutes = max(0, state.effectiveIdleAutoStopMinutes)
             dayStartHour = state.effectiveDayStartHour
         }
         // Catch an edit the user typed but didn't press Return on.

@@ -21,9 +21,9 @@ final class ExporterTests: XCTestCase {
                       entry("canopyops", startOffset: 4 * 3600, hours: 4.1)], // 4.10 -> 4.00
             projects: [initech, ops], timeZone: oslo, asOf: mondayMorning.addingTimeInterval(86_400))
         let lines = csv.split(separator: "\n").map(String.init)
-        XCTAssertEqual(lines[0], "date,employee,project,activity,hours,description")
-        XCTAssertEqual(lines[1], "2026-07-20,TK,10432,DEV,3.50,")
-        XCTAssertEqual(lines[2], "2026-07-20,TK,10440,DEV,4.00,")
+        XCTAssertEqual(lines[0], "date;employee;project;activity;hours;description")
+        XCTAssertEqual(lines[1], "20260720;TK;10432;DEV;3.50;")
+        XCTAssertEqual(lines[2], "20260720;TK;10440;DEV;4.00;")
     }
 
     func testExactColumnFlag() {
@@ -32,8 +32,8 @@ final class ExporterTests: XCTestCase {
                                projects: [initech], timeZone: oslo,
                                asOf: mondayMorning.addingTimeInterval(86_400))
         let lines = csv.split(separator: "\n").map(String.init)
-        XCTAssertEqual(lines[0], "date,employee,project,activity,hours,exact_hours,description")
-        XCTAssertEqual(lines[1], "2026-07-20,TK,10432,DEV,3.50,3.40,")
+        XCTAssertEqual(lines[0], "date;employee;project;activity;hours;exact_hours;description")
+        XCTAssertEqual(lines[1], "20260720;TK;10432;DEV;3.50;3.40;")
     }
 
     func testMultipleDaysSortedAndSeparatelyRounded() {
@@ -44,8 +44,8 @@ final class ExporterTests: XCTestCase {
             projects: [initech], timeZone: oslo,
             asOf: mondayMorning.addingTimeInterval(3 * 86_400))
         let lines = csv.split(separator: "\n").map(String.init)
-        XCTAssertEqual(lines[1], "2026-07-20,TK,10432,DEV,1.00,")
-        XCTAssertEqual(lines[2], "2026-07-21,TK,10432,DEV,2.00,")
+        XCTAssertEqual(lines[1], "20260720;TK;10432;DEV;1.00;")
+        XCTAssertEqual(lines[2], "20260721;TK;10432;DEV;2.00;")
     }
 
     func testRunningEntryClippedAtNow() {
@@ -54,7 +54,7 @@ final class ExporterTests: XCTestCase {
         let exporter = XledgerExporter(employee: "TK", incrementHours: 0.25, includeExact: false)
         let csv = exporter.csv(entries: [running], projects: [initech], timeZone: oslo,
                                asOf: mondayMorning.addingTimeInterval(7200))  // 2h in
-        XCTAssertTrue(csv.contains("2026-07-20,TK,10432,DEV,2.00,"), csv)
+        XCTAssertTrue(csv.contains("20260720;TK;10432;DEV;2.00;"), csv)
     }
 
     func testUnknownProjectSkippedAndZeroRowsOmitted() {

@@ -11,16 +11,21 @@ public struct TimeKeeperSettings: Equatable, Sendable {
     /// detached, letting the next activity episode open a fresh block
     /// (and earn a fresh clock-in nudge)
     public var blockStalenessSeconds: Double
+    /// idle span after which a running timer is stopped at the moment idleness
+    /// began (an overnight can't silently bill 17 hours). 0 disables the cap.
+    public var idleAutoStopSeconds: Double
 
     public init(idleThresholdSeconds: Double = 300, nudgesPerHour: Int = 2,
                 clockInLeadMinutes: Double = 2, switchLeadMinutes: Double = 10,
-                ambiguityRatio: Double = 1.5, blockStalenessSeconds: Double = 600) {
+                ambiguityRatio: Double = 1.5, blockStalenessSeconds: Double = 600,
+                idleAutoStopSeconds: Double = 7200) {
         self.idleThresholdSeconds = idleThresholdSeconds
         self.nudgesPerHour = nudgesPerHour
         self.clockInLeadMinutes = clockInLeadMinutes
         self.switchLeadMinutes = switchLeadMinutes
         self.ambiguityRatio = ambiguityRatio
         self.blockStalenessSeconds = blockStalenessSeconds
+        self.idleAutoStopSeconds = idleAutoStopSeconds
     }
 }
 
@@ -32,17 +37,43 @@ public enum TimeKeeperEffect: Equatable, Sendable {
     case provisionalOpened(ProvisionalBlock)
     case provisionalUpdated(ProvisionalBlock)
     case askIdleGap(from: Date, to: Date)
+    /// The running timer was stopped because idleness exceeded the auto-stop
+    /// cap. The paired `entryStopped` persists the entry; this one is for
+    /// telling the user what happened and why.
+    case autoClockedOut(projectId: String, at: Date)
 }
 
 public struct TimeKeeper {
+    /// A sustained, unambiguous different-project leader detected while a
+    /// timer runs. Persists until the user acts on it, dismisses it, or the
+    /// clocked-in project takes the lead back — unlike the one-shot switch
+    /// notification, which is easy to miss.
+    public struct SwitchCandidate: Equatable, Sendable {
+        public var projectId: String
+        /// When the leadership streak began — the natural backfill anchor for
+        /// an accepted switch. Fixed at candidate formation so the suggestion
+        /// doesn't drift as the scoring window slides.
+        public var since: Date
+    }
+
+    /// An idle span (while clocked in) awaiting the user's keep/discard call.
+    public struct IdleGap: Equatable, Sendable {
+        public var from: Date
+        public var to: Date
+    }
+
     public private(set) var settings: TimeKeeperSettings
     public private(set) var runningEntry: TimeEntry?
+    public private(set) var switchCandidate: SwitchCandidate?
+    public private(set) var pendingIdleGap: IdleGap?
 
     var scorer: Scorer
     var openBlock: ProvisionalBlock?
     var nudgeTimes: [Date] = []          // for the per-hour budget
     var nudgedBlockIds: Set<UUID> = []   // one nudge per block, ever
-    var nudgedSwitchEpisode: (projectId: String, since: Date)?   // one nudge per switch episode
+    /// A dismissed switch suggestion stays dismissed while that project keeps
+    /// leading; cleared when the clocked-in project regains the lead.
+    var dismissedSwitchProjectId: String?
     var idleSince: Date?
 
     public init(projects: [Project], settings: TimeKeeperSettings) {
@@ -66,7 +97,9 @@ public struct TimeKeeper {
         effects += clockOut(at: now)
         let entry = TimeEntry(projectId: projectId, start: backfillFrom ?? now, source: source)
         runningEntry = entry
-        nudgedSwitchEpisode = nil
+        switchCandidate = nil
+        dismissedSwitchProjectId = nil
+        pendingIdleGap = nil
         // clocking in resolves any open provisional block
         if var block = openBlock {
             block.status = .accepted
@@ -101,14 +134,56 @@ public struct TimeKeeper {
         guard var entry = runningEntry else { return [] }
         entry.end = now
         runningEntry = nil
-        nudgedSwitchEpisode = nil
+        switchCandidate = nil
+        dismissedSwitchProjectId = nil
+        pendingIdleGap = nil
         return [.entryStopped(entry)]
+    }
+
+    /// Hide the current switch suggestion. It stays hidden while that project
+    /// keeps leading; once the clocked-in project regains the lead (or the
+    /// timer changes), a later sustained switch earns a fresh suggestion.
+    public mutating func dismissSwitchCandidate() {
+        dismissedSwitchProjectId = switchCandidate?.projectId
+        switchCandidate = nil
+    }
+
+    /// Replace the running entry's fields in place — the "this timer was
+    /// actually project X all along" edit. The entry keeps its identity and
+    /// keeps running (`end` must be nil). A switch suggestion (or an earlier
+    /// dismissal) for the newly assigned project is thereby satisfied; one for
+    /// a different project stays, since the mismatch it flags still stands.
+    @discardableResult
+    public mutating func updateRunningEntry(_ entry: TimeEntry) -> [TimeKeeperEffect] {
+        guard runningEntry != nil, entry.end == nil else { return [] }
+        runningEntry = entry
+        if switchCandidate?.projectId == entry.projectId { switchCandidate = nil }
+        if dismissedSwitchProjectId == entry.projectId { dismissedSwitchProjectId = nil }
+        return [.entryStarted(entry)]
     }
 
     @discardableResult
     public mutating func handle(_ obs: Observation) -> [TimeKeeperEffect] {
         var effects: [TimeKeeperEffect] = []
         let now = obs.timestamp
+
+        // ---- Idle auto-stop cap ----
+        // Past the cap, keeping the timer alive stops being a "suggestion" and
+        // becomes silently billing an absence (the overnight case). Stop at the
+        // moment idleness began — the honest end — and say so.
+        if let entry = runningEntry, settings.idleAutoStopSeconds > 0,
+           obs.idleSeconds >= settings.idleAutoStopSeconds {
+            let end = max(entry.start, now.addingTimeInterval(-obs.idleSeconds))
+            var stopped = entry
+            stopped.end = end
+            runningEntry = nil
+            switchCandidate = nil
+            dismissedSwitchProjectId = nil
+            pendingIdleGap = nil
+            idleSince = nil
+            effects.append(.entryStopped(stopped))
+            effects.append(.autoClockedOut(projectId: stopped.projectId, at: end))
+        }
 
         // ---- Idle tracking (only meaningful while clocked in) ----
         if runningEntry != nil {
@@ -117,6 +192,7 @@ public struct TimeKeeper {
                     idleSince = now.addingTimeInterval(-obs.idleSeconds)
                 }
             } else if let since = idleSince {
+                pendingIdleGap = IdleGap(from: since, to: now)
                 effects.append(.askIdleGap(from: since, to: now))
                 idleSince = nil
             }
@@ -150,18 +226,25 @@ public struct TimeKeeper {
 
         if let running = runningEntry {
             // ---- Clocked in: watch for a decisive different leader ----
-            if unambiguous, leader.projectId != running.projectId,
-               sustainedMinutes >= settings.switchLeadMinutes {
+            if unambiguous, leader.projectId == running.projectId {
+                // The clocked-in project has the lead again: retire any open
+                // suggestion and forgive an earlier dismissal, so the next
+                // genuine switch starts a fresh episode.
+                switchCandidate = nil
+                dismissedSwitchProjectId = nil
+            } else if unambiguous, leader.projectId != running.projectId,
+                      sustainedMinutes >= settings.switchLeadMinutes,
+                      leader.projectId != dismissedSwitchProjectId,
+                      leader.projectId != switchCandidate?.projectId {
+                // A new sustained leader: raise (or replace) the persistent
+                // suggestion and notify once per episode. The candidate — not
+                // the sliding `leadingSince` — is the dedup anchor, so the
+                // nudge can't re-fire itself into the budget cap.
                 let since = leader.leadingSince ?? now
-                let alreadyNudged = nudgedSwitchEpisode?.projectId == leader.projectId
-                    && nudgedSwitchEpisode?.since == since
-                if !alreadyNudged {
-                    let sent = nudgeIfBudgetAllows(now: now,
-                        make: { .nudgeSwitch(toProjectId: leader.projectId, detectedAt: since) },
-                        blockAnchor: nil)
-                    if !sent.isEmpty { nudgedSwitchEpisode = (leader.projectId, since) }
-                    effects += sent
-                }
+                switchCandidate = SwitchCandidate(projectId: leader.projectId, since: since)
+                effects += nudgeIfBudgetAllows(now: now,
+                    make: { .nudgeSwitch(toProjectId: leader.projectId, detectedAt: since) },
+                    blockAnchor: nil)
             }
         } else {
             // ---- Not clocked in: provisional block + one nudge ----
@@ -210,6 +293,7 @@ public struct TimeKeeper {
 
     @discardableResult
     public mutating func resolveIdleGap(keep: Bool, from: Date, to: Date) -> [TimeKeeperEffect] {
+        pendingIdleGap = nil
         guard !keep, var entry = runningEntry else { return [] }
         entry.end = from
         let resumed = TimeEntry(projectId: entry.projectId, start: to, source: entry.source)

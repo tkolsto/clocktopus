@@ -164,6 +164,101 @@ final class TimeKeeperTests: XCTestCase {
         XCTAssertEqual(to, "canopyops")
     }
 
+    // MARK: - Switch candidate (persistent suggestion)
+
+    func testSwitchCandidatePersistsAndNudgesOncePerEpisode() {
+        _ = keeper.clockIn(projectId: "initech", at: t0, backfillFrom: nil, source: .manual)
+        var all: [TimeKeeperEffect] = []
+        // 40 minutes on canopyops: well past the point where the scoring
+        // window slides and `leadingSince` starts drifting every observation —
+        // the old dedup key. Still exactly one nudge, and a stable candidate.
+        for i in 0..<80 {
+            all += keeper.handle(obs(Double(i) * 30, dir: "/src/canopyops"))
+        }
+        let switches = all.filter { if case .nudgeSwitch = $0 { return true }; return false }
+        XCTAssertEqual(switches.count, 1, "one nudge per episode, not one per budget refill")
+        let candidate = try! XCTUnwrap(keeper.switchCandidate)
+        XCTAssertEqual(candidate.projectId, "canopyops")
+        // The anchor is frozen at formation, not sliding with the window.
+        XCTAssertLessThanOrEqual(candidate.since.timeIntervalSince(t0), 60)
+    }
+
+    func testSwitchCandidateClearsWhenRunningProjectLeadsAgain() {
+        _ = keeper.clockIn(projectId: "initech", at: t0, backfillFrom: nil, source: .manual)
+        for i in 0..<24 { _ = keeper.handle(obs(Double(i) * 30, dir: "/src/canopyops")) }
+        XCTAssertNotNil(keeper.switchCandidate)
+        // Back on the clocked-in project long enough to outscore the leftovers.
+        for i in 24..<80 { _ = keeper.handle(obs(Double(i) * 30, dir: "/src/initech")) }
+        XCTAssertNil(keeper.switchCandidate, "returning to the running project retires the suggestion")
+    }
+
+    func testDismissedSwitchCandidateStaysDismissedWhileLeadingButReturns() {
+        _ = keeper.clockIn(projectId: "initech", at: t0, backfillFrom: nil, source: .manual)
+        for i in 0..<24 { _ = keeper.handle(obs(Double(i) * 30, dir: "/src/canopyops")) }
+        XCTAssertNotNil(keeper.switchCandidate)
+        keeper.dismissSwitchCandidate()
+        XCTAssertNil(keeper.switchCandidate)
+
+        // Continued canopyops lead must NOT resurrect the dismissed suggestion.
+        var after: [TimeKeeperEffect] = []
+        for i in 24..<48 { after += keeper.handle(obs(Double(i) * 30, dir: "/src/canopyops")) }
+        XCTAssertNil(keeper.switchCandidate)
+        XCTAssertFalse(after.contains { if case .nudgeSwitch = $0 { return true }; return false })
+
+        // Lead returns to initech (forgives the dismissal), then a NEW
+        // canopyops episode earns a fresh suggestion.
+        for i in 48..<110 { _ = keeper.handle(obs(Double(i) * 30, dir: "/src/initech")) }
+        for i in 110..<160 { _ = keeper.handle(obs(Double(i) * 30, dir: "/src/canopyops")) }
+        XCTAssertEqual(keeper.switchCandidate?.projectId, "canopyops",
+                       "a fresh episode after a dismissal earns a fresh suggestion")
+    }
+
+    func testUpdateRunningEntryReassignsWithoutStopping() {
+        _ = keeper.clockIn(projectId: "initech", at: t0, backfillFrom: nil, source: .manual)
+        let originalId = keeper.runningEntry!.id
+        // Sustained canopyops lead raises a switch suggestion…
+        for i in 0..<24 { _ = keeper.handle(obs(Double(i) * 30, dir: "/src/canopyops")) }
+        XCTAssertEqual(keeper.switchCandidate?.projectId, "canopyops")
+
+        // …and the user reassigns the whole running block instead of splitting.
+        var edited = keeper.runningEntry!
+        edited.projectId = "canopyops"
+        let effects = keeper.updateRunningEntry(edited)
+
+        XCTAssertEqual(keeper.runningEntry?.projectId, "canopyops")
+        XCTAssertEqual(keeper.runningEntry?.id, originalId, "identity survives the reassign")
+        XCTAssertEqual(keeper.runningEntry?.start, t0, "still backdated to the original start")
+        XCTAssertNil(keeper.runningEntry?.end, "still running")
+        XCTAssertNil(keeper.switchCandidate, "the reassign satisfies the suggestion")
+        guard case .entryStarted(let saved)? = effects.first else {
+            return XCTFail("expected a persistence effect, got \(effects)")
+        }
+        XCTAssertEqual(saved.projectId, "canopyops")
+    }
+
+    func testUpdateRunningEntryRejectsStoppedOrAbsentTimers() {
+        // No running timer: nothing to update.
+        let ghost = TimeEntry(projectId: "initech", start: t0, source: .manual)
+        XCTAssertTrue(keeper.updateRunningEntry(ghost).isEmpty)
+
+        // An entry with an end would silently stop the timer through the back
+        // door — refuse it.
+        _ = keeper.clockIn(projectId: "initech", at: t0, backfillFrom: nil, source: .manual)
+        var closed = keeper.runningEntry!
+        closed.end = t0.addingTimeInterval(600)
+        XCTAssertTrue(keeper.updateRunningEntry(closed).isEmpty)
+        XCTAssertNil(keeper.runningEntry?.end)
+    }
+
+    func testSwitchCandidateClearedByClockActions() {
+        _ = keeper.clockIn(projectId: "initech", at: t0, backfillFrom: nil, source: .manual)
+        for i in 0..<24 { _ = keeper.handle(obs(Double(i) * 30, dir: "/src/canopyops")) }
+        XCTAssertNotNil(keeper.switchCandidate)
+        _ = keeper.clockIn(projectId: "canopyops", at: t0.addingTimeInterval(800),
+                           backfillFrom: nil, source: .manual)
+        XCTAssertNil(keeper.switchCandidate, "acting on the suggestion resolves it")
+    }
+
     func testAmbiguousSignalsNeverNudge() {
         var all: [TimeKeeperEffect] = []
         for i in 0..<20 {
@@ -499,5 +594,65 @@ final class TimeKeeperTests: XCTestCase {
                                             to: t0.addingTimeInterval(630))
         XCTAssertTrue(effects.isEmpty)
         XCTAssertEqual(keeper.runningEntry?.start, t0)
+    }
+
+    func testIdleGapStaysPendingUntilResolved() {
+        _ = keeper.clockIn(projectId: "initech", at: t0, backfillFrom: nil, source: .manual)
+        _ = keeper.handle(obs(0, dir: "/src/initech"))
+        _ = keeper.handle(obs(600, dir: "/src/initech", idle: 590))
+        _ = keeper.handle(obs(630, dir: "/src/initech", idle: 5))     // back
+        let gap = try! XCTUnwrap(keeper.pendingIdleGap, "the ask must persist, not fire-and-forget")
+        XCTAssertEqual(gap.from.timeIntervalSince(t0), 10, accuracy: 1)
+        XCTAssertEqual(gap.to.timeIntervalSince(t0), 630, accuracy: 1)
+
+        _ = keeper.resolveIdleGap(keep: true, from: gap.from, to: gap.to)
+        XCTAssertNil(keeper.pendingIdleGap)
+    }
+
+    // MARK: - Idle auto-stop cap
+
+    func testLongIdleAutoStopsAtIdleStart() {
+        var s = TimeKeeperSettings()
+        s.idleAutoStopSeconds = 3600
+        keeper.updateSettings(s)
+        _ = keeper.clockIn(projectId: "initech", at: t0, backfillFrom: nil, source: .manual)
+        _ = keeper.handle(obs(0, dir: "/src/initech"))
+
+        // 65 minutes idle in one observation (overnight in miniature).
+        let effects = keeper.handle(obs(4200, idle: 3900))
+        XCTAssertNil(keeper.runningEntry)
+        let stopped = effects.compactMap { e -> TimeEntry? in
+            if case .entryStopped(let entry) = e { return entry }; return nil
+        }
+        XCTAssertEqual(stopped.count, 1)
+        // Stopped at the honest end: when idleness began (4200 - 3900 = 300s).
+        XCTAssertEqual(stopped[0].end!.timeIntervalSince(t0), 300, accuracy: 1)
+        let notices = effects.filter { if case .autoClockedOut = $0 { return true }; return false }
+        XCTAssertEqual(notices.count, 1, "the user must be told why the timer stopped")
+        XCTAssertNil(keeper.pendingIdleGap, "the stop resolves the gap; no dangling question")
+    }
+
+    func testAutoStopDisabledWhenCapIsZero() {
+        var s = TimeKeeperSettings()
+        s.idleAutoStopSeconds = 0
+        keeper.updateSettings(s)
+        _ = keeper.clockIn(projectId: "initech", at: t0, backfillFrom: nil, source: .manual)
+        _ = keeper.handle(obs(0, dir: "/src/initech"))
+        _ = keeper.handle(obs(50_000, idle: 49_000))
+        XCTAssertNotNil(keeper.runningEntry, "0 disables the cap (ask-only mode)")
+    }
+
+    func testAutoStopNeverEndsBeforeEntryStart() {
+        var s = TimeKeeperSettings()
+        s.idleAutoStopSeconds = 3600
+        keeper.updateSettings(s)
+        // Clock in while ALREADY long idle (e.g. via a notification action):
+        // the honest end would precede the start — clamp to the start.
+        _ = keeper.clockIn(projectId: "initech", at: t0, backfillFrom: nil, source: .manual)
+        let effects = keeper.handle(obs(60, idle: 7200))
+        let stopped = effects.compactMap { e -> TimeEntry? in
+            if case .entryStopped(let entry) = e { return entry }; return nil
+        }
+        XCTAssertEqual(stopped.first?.end, stopped.first.map { _ in t0 })
     }
 }

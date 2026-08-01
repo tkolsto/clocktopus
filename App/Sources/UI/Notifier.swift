@@ -56,6 +56,15 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
              userInfo: ["projectId": project.id, "at": detectedAt.timeIntervalSince1970])
     }
 
+    /// Informational only — the timer already stopped; no actions to take.
+    func autoClockedOut(project: Project?, at: Date) {
+        guard let project else { return }
+        post(title: "Stopped the \(project.name) timer",
+             body: "You went idle for a long time — clocked out at \(Self.time(at)). Adjust in Review if wrong.",
+             category: "",
+             userInfo: [:])
+    }
+
     func askIdleGap(from: Date, to: Date) {
         let minutes = Int(to.timeIntervalSince(from) / 60)
         post(title: "Welcome back",

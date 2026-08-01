@@ -12,9 +12,16 @@ struct PopoverView: View {
             if let notice = state.recoveryNotice {
                 HStack(alignment: .top, spacing: 4) {
                     Text(notice).font(.caption).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                     Button("✕") { state.recoveryNotice = nil }.buttonStyle(.borderless)
                 }
                 .padding(.top, 4)
+            }
+            if let suggestion = state.switchSuggestion {
+                switchBanner(suggestion)
+            }
+            if let gap = state.pendingIdleGap {
+                idleGapBanner(gap)
             }
             Divider().padding(.vertical, 6)
             projectList
@@ -39,6 +46,60 @@ struct PopoverView: View {
         }
     }
 
+    /// Persistent "looks like you switched" suggestion — the popover twin of
+    /// the easy-to-miss switch notification. Stays until acted on or dismissed.
+    private func switchBanner(_ suggestion: TimeKeeper.SwitchCandidate) -> some View {
+        let name = state.project(suggestion.projectId)?.name ?? suggestion.projectId
+        return HStack(spacing: 6) {
+            Image(systemName: "arrow.triangle.swap")
+                .foregroundStyle(.orange)
+            VStack(alignment: .leading, spacing: 0) {
+                Text("Working on \(name)?").font(.callout.weight(.medium))
+                Text("since \(suggestion.since.formatted(date: .omitted, time: .shortened))")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            Spacer()
+            Button("Switch") { state.acceptSwitchSuggestion() }
+                .buttonStyle(.borderedProminent).controlSize(.small).tint(.orange)
+            Button {
+                state.dismissSwitchSuggestion()
+            } label: {
+                Image(systemName: "xmark").font(.caption2)
+            }
+            .buttonStyle(.borderless)
+            .help("Not now — stay on the current project")
+        }
+        .padding(8)
+        .background(RoundedRectangle(cornerRadius: 8).fill(.orange.opacity(0.12)))
+        .padding(.top, 6)
+    }
+
+    /// Unresolved "you were away" question — persists here so an unanswered
+    /// notification can't silently bill the gap.
+    private func idleGapBanner(_ gap: TimeKeeper.IdleGap) -> some View {
+        let minutes = Int(gap.to.timeIntervalSince(gap.from) / 60)
+        return HStack(spacing: 6) {
+            Image(systemName: "moon.zzz.fill")
+                .foregroundStyle(.indigo)
+            VStack(alignment: .leading, spacing: 0) {
+                Text("Away \(Self.hm(gap.to.timeIntervalSince(gap.from)))")
+                    .font(.callout.weight(.medium))
+                Text("\(gap.from.formatted(date: .omitted, time: .shortened))–\(gap.to.formatted(date: .omitted, time: .shortened)) while clocked in")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            Spacer()
+            Button("Keep") { state.resolveIdleGap(keep: true, from: gap.from, to: gap.to) }
+                .controlSize(.small)
+                .help("Bill the \(minutes) min (meeting, whiteboard…)")
+            Button("Discard") { state.resolveIdleGap(keep: false, from: gap.from, to: gap.to) }
+                .controlSize(.small)
+                .help("Split the entry around the gap")
+        }
+        .padding(8)
+        .background(RoundedRectangle(cornerRadius: 8).fill(.indigo.opacity(0.10)))
+        .padding(.top, 6)
+    }
+
     private var projectList: some View {
         VStack(alignment: .leading, spacing: 2) {
             ForEach(state.projects) { project in
@@ -58,8 +119,12 @@ struct PopoverView: View {
                         }
                         Spacer()
                         if isRunning, let entry = state.runningEntry {
-                            Text(Self.hm(entry.duration(asOf: Date())))
-                                .monospacedDigit().foregroundStyle(.secondary)
+                            // Tick while the popover is open (a static Date()
+                            // freezes the readout at whatever it was on open).
+                            TimelineView(.periodic(from: .now, by: 30)) { context in
+                                Text(Self.hm(entry.duration(asOf: context.date)))
+                                    .monospacedDigit().foregroundStyle(.secondary)
+                            }
                             Image(systemName: "stop.fill")
                                 .font(.caption).foregroundStyle(.secondary)
                                 .help("Stop")
@@ -72,6 +137,13 @@ struct PopoverView: View {
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .contextMenu {
+                    if !isRunning, state.runningEntry != nil {
+                        Button("Move running timer here") {
+                            state.reassignRunningEntry(to: project.id)
+                        }
+                    }
+                }
             }
             if state.projects.isEmpty {
                 Text("No projects — check config in Preferences")

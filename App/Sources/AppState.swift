@@ -11,6 +11,11 @@ final class AppState: ObservableObject {
     @Published var weekTotal: TimeInterval = 0
     @Published var configError: String?
     @Published var recoveryNotice: String?   // dangling-entry recovery, user-dismissable
+    /// Sustained different-project leader while a timer runs — shown in the
+    /// popover until acted on, dismissed, or overtaken (mirrors the keeper).
+    @Published var switchSuggestion: TimeKeeper.SwitchCandidate?
+    /// Idle span awaiting the user's keep/discard decision (mirrors the keeper).
+    @Published var pendingIdleGap: TimeKeeper.IdleGap?
 
     private(set) var store: Store!
     private(set) var personal: PersonalConfig?
@@ -46,6 +51,14 @@ final class AppState: ObservableObject {
     var effectiveDayStartHour: Int {
         settings.dayStartHour ?? Self.defaultDayStartHour
     }
+    static let defaultSwitchLeadMinutes = 10.0
+    var effectiveSwitchLeadMinutes: Double {
+        settings.switchLeadMinutes ?? Self.defaultSwitchLeadMinutes
+    }
+    static let defaultIdleAutoStopMinutes = 120
+    var effectiveIdleAutoStopMinutes: Int {
+        settings.idleAutoStopMinutes ?? Self.defaultIdleAutoStopMinutes
+    }
     /// Work-day calendar for grouping time into days that start at the
     /// configured hour rather than midnight.
     var workday: WorkdayCalendar {
@@ -60,6 +73,8 @@ final class AppState: ObservableObject {
         s.idleThresholdSeconds = effectiveIdleThreshold
         s.nudgesPerHour = effectiveNudgesPerHour
         s.clockInLeadMinutes = effectiveClockInLeadMinutes
+        s.switchLeadMinutes = effectiveSwitchLeadMinutes
+        s.idleAutoStopSeconds = Double(effectiveIdleAutoStopMinutes) * 60
         return s
     }
 
@@ -170,6 +185,11 @@ final class AppState: ObservableObject {
                 keeper.restore(openBlock: recent)
             }
             self.keeper = keeper
+            // The rebuilt keeper starts with no switch/idle episode state —
+            // clear the published mirrors so the popover doesn't show a
+            // suggestion the keeper no longer knows about.
+            switchSuggestion = nil
+            pendingIdleGap = nil
         } catch {
             configError = "Config error: \(error.localizedDescription)"
         }
@@ -187,6 +207,37 @@ final class AppState: ObservableObject {
     func clockOut() {
         guard keeper != nil else { return }
         apply(effects: keeper!.clockOut(at: Date()))
+    }
+
+    /// Act on the persistent switch suggestion: stop the running timer at the
+    /// detected switch point and start the suggested project from there.
+    func acceptSwitchSuggestion() {
+        guard let suggestion = switchSuggestion else { return }
+        let switchPoint = max(suggestion.since, runningEntry?.start ?? suggestion.since)
+        stopRunningEntry(at: switchPoint)
+        clockIn(projectId: suggestion.projectId, backfillFrom: switchPoint)
+    }
+
+    func dismissSwitchSuggestion() {
+        keeper?.dismissSwitchCandidate()
+        refreshDerived()
+    }
+
+    /// Save edits to the still-running entry (project/start/note) without
+    /// stopping it. The keeper owns the running entry, so the change goes
+    /// through it; the emitted effect persists to the store.
+    func updateRunningEntry(_ entry: TimeEntry) {
+        guard keeper != nil, entry.end == nil else { return }
+        apply(effects: keeper!.updateRunningEntry(entry))
+    }
+
+    /// Move the running timer to another project wholesale, keeping its start —
+    /// "this whole block was actually X" (vs. the switch banner, which splits
+    /// at the detected switch point).
+    func reassignRunningEntry(to projectId: String) {
+        guard var entry = runningEntry, entry.projectId != projectId else { return }
+        entry.projectId = projectId
+        updateRunningEntry(entry)
     }
 
     func stopRunningEntry(at end: Date) {
@@ -233,11 +284,24 @@ final class AppState: ObservableObject {
         refreshDerived()   // recompute today/week totals against the new boundary
     }
 
+    func setSwitchLeadMinutes(_ minutes: Double) {
+        settings.switchLeadMinutes = minutes
+        keeper?.updateSettings(makeKeeperSettings())
+    }
+
+    func setIdleAutoStopMinutes(_ minutes: Int) {
+        settings.idleAutoStopMinutes = minutes
+        keeper?.updateSettings(makeKeeperSettings())
+    }
+
     /// Persist an entry resized by dragging its edge in the timeline. The
     /// timeline clamps the drag to neighbours, so this can't create an overlap.
     func saveResizedEntry(_ entry: TimeEntry) {
         guard store != nil else { return }
         try? store.save(entry)
+        // The keeper carries its own copy of the running entry; without this,
+        // the next clock-out would re-save the stale pre-resize start.
+        if entry.end == nil { keeper?.restore(runningEntry: entry) }
         refreshDerived()
     }
 
@@ -284,6 +348,19 @@ final class AppState: ObservableObject {
         refreshDerived()
     }
 
+    /// Bulk-dismiss unverified blocks that ended before `cutoff` (nil = all).
+    /// One triage click instead of thirty-four.
+    func dismissBlocks(endedBefore cutoff: Date?) {
+        guard store != nil else { return }
+        for block in pendingBlocks where cutoff.map({ block.end < $0 }) ?? true {
+            var dismissed = block
+            dismissed.status = .dismissed
+            try? store.save(dismissed)
+            keeper?.resolveBlock(id: block.id)
+        }
+        refreshDerived()
+    }
+
     func resolveIdleGap(keep: Bool, from: Date, to: Date) {
         guard keeper != nil else { return }
         apply(effects: keeper!.resolveIdleGap(keep: keep, from: from, to: to))
@@ -310,6 +387,12 @@ final class AppState: ObservableObject {
                 Notifier.shared.nudgeSwitch(project: project(projectId), detectedAt: detectedAt)
             case .askIdleGap(let from, let to):
                 Notifier.shared.askIdleGap(from: from, to: to)
+            case .autoClockedOut(let projectId, let at):
+                let name = project(projectId)?.name ?? projectId
+                recoveryNotice = "Stopped the \(name) timer at "
+                    + "\(at.formatted(date: .abbreviated, time: .shortened)) after a long "
+                    + "idle stretch — adjust it in Review if that's wrong."
+                Notifier.shared.autoClockedOut(project: project(projectId), at: at)
             }
         }
         refreshDerived()
@@ -322,6 +405,8 @@ final class AppState: ObservableObject {
     func refreshDerived() {
         runningEntry = try? store.runningEntry()
         pendingBlocks = (try? store.pendingBlocks(asOf: Date())) ?? []
+        switchSuggestion = keeper?.switchCandidate
+        pendingIdleGap = keeper?.pendingIdleGap
         let now = Date()
         todayTotal = total(in: workday.dayInterval(for: now), now: now)
         weekTotal = total(in: workday.weekInterval(for: now), now: now)

@@ -4,14 +4,16 @@ import TOMLKit
 public struct ProjectOverride: Codable, Equatable, Sendable {
     public var name: String
     public var dirs: [String]
+    public var apps: [String]
     public var keywords: [String]
     public var urls: [String]
     public var emoji: String?
 
-    public init(name: String, dirs: [String] = [], keywords: [String] = [],
-                urls: [String] = [], emoji: String? = nil) {
+    public init(name: String, dirs: [String] = [], apps: [String] = [],
+                keywords: [String] = [], urls: [String] = [], emoji: String? = nil) {
         self.name = name
         self.dirs = dirs
+        self.apps = apps
         self.keywords = keywords
         self.urls = urls
         self.emoji = emoji
@@ -85,6 +87,7 @@ public enum ConfigLoader {
                 overrides.append(ProjectOverride(
                     name: name,
                     dirs: stringArray(t["dirs"]),
+                    apps: stringArray(t["apps"]),
                     keywords: stringArray(t["keywords"]),
                     urls: stringArray(t["urls"]),
                     emoji: t["emoji"]?.string
@@ -103,13 +106,14 @@ public enum ConfigLoader {
         )
     }
 
-    /// Merge personal overrides into team projects by name. Override dirs and
-    /// urls append; keywords/emoji replace when non-empty.
+    /// Merge personal overrides into team projects by name. Override dirs,
+    /// apps and urls append; keywords/emoji replace when non-empty.
     public static func merge(team: TeamConfig, overrides: [ProjectOverride]) -> [Project] {
         team.projects.map { project in
             guard let o = overrides.first(where: { $0.name == project.name }) else { return project }
             var merged = project
             merged.dirs += o.dirs
+            merged.apps += o.apps
             merged.urls += o.urls
             if !o.keywords.isEmpty { merged.keywords = o.keywords }
             if let emoji = o.emoji { merged.emoji = emoji }

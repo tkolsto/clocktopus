@@ -19,6 +19,8 @@ final class SettingsStore {
         static let browserDetection = "clocktopus.browserDetectionEnabled"
         static let clockInLead = "clocktopus.clockInLeadMinutes"
         static let dayStartHour = "clocktopus.dayStartHour"
+        static let switchLead = "clocktopus.switchLeadMinutes"
+        static let idleAutoStop = "clocktopus.idleAutoStopMinutes"
     }
 
     var idleThresholdSeconds: Double? {
@@ -54,6 +56,17 @@ final class SettingsStore {
     var dayStartHour: Int? {
         get { defaults.object(forKey: Key.dayStartHour) as? Int }
         set { setOrClear(newValue, Key.dayStartHour) }
+    }
+
+    var switchLeadMinutes: Double? {
+        get { defaults.object(forKey: Key.switchLead) as? Double }
+        set { setOrClear(newValue, Key.switchLead) }
+    }
+
+    /// 0 means "never auto-stop"; nil falls back to the default.
+    var idleAutoStopMinutes: Int? {
+        get { defaults.object(forKey: Key.idleAutoStop) as? Int }
+        set { setOrClear(newValue, Key.idleAutoStop) }
     }
 
     private func setOrClear(_ value: Any?, _ key: String) {

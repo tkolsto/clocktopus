@@ -7,11 +7,13 @@ struct EntryEditorSheet: View {
 
     let entry: TimeEntry?          // nil = creating new
     let defaultStart: Date
+    var defaultEnd: Date? = nil    // pre-filled by drag-to-create
 
     @State private var projectId = ""
     @State private var start = Date()
     @State private var end = Date()
     @State private var note = ""
+    @State private var keepRunning = true
     @State private var validationError: String?
 
     private var isEditingRunningEntry: Bool {
@@ -27,15 +29,26 @@ struct EntryEditorSheet: View {
                     .font(.caption).foregroundStyle(.orange)
             }
             if isEditingRunningEntry {
-                Label("Currently running — saving sets the end time and stops the timer",
-                      systemImage: "record.circle")
-                    .font(.caption).foregroundStyle(.orange)
+                // Editing the live timer: default is to keep it running (change
+                // project/start in place); flipping the toggle stops it at the
+                // chosen end time, the old behavior.
+                Toggle(isOn: $keepRunning) {
+                    Label("Keep the timer running", systemImage: "record.circle")
+                        .font(.caption)
+                }
+                .toggleStyle(.checkbox)
             }
             Picker("Project", selection: $projectId) {
                 ForEach(state.projects) { Text($0.name).tag($0.id) }
             }
             DatePicker("Start", selection: $start)
-            DatePicker("End", selection: $end)
+            if isEditingRunningEntry && keepRunning {
+                LabeledContent("End") {
+                    Text("still running").foregroundStyle(.secondary)
+                }
+            } else {
+                DatePicker("End", selection: $end)
+            }
             TextField("Note", text: $note)
             if let validationError {
                 Text(validationError).font(.caption).foregroundStyle(.red)
@@ -52,7 +65,9 @@ struct EntryEditorSheet: View {
                 Button("Cancel") { dismiss() }
                 Button("Save") { save() }
                     .keyboardShortcut(.defaultAction)
-                    .disabled(projectId.isEmpty || end <= start)
+                    .disabled(projectId.isEmpty
+                              || (isEditingRunningEntry && keepRunning
+                                  ? start >= Date() : end <= start))
             }
         }
         .padding()
@@ -60,10 +75,11 @@ struct EntryEditorSheet: View {
         .onAppear {
             projectId = entry?.projectId ?? state.projects.first?.id ?? ""
             start = entry?.start ?? defaultStart
+            keepRunning = isEditingRunningEntry
             if isEditingRunningEntry {
                 end = Date()
             } else {
-                end = entry?.end ?? defaultStart.addingTimeInterval(3600)
+                end = entry?.end ?? defaultEnd ?? defaultStart.addingTimeInterval(3600)
             }
             note = entry?.note ?? ""
         }
@@ -71,6 +87,23 @@ struct EntryEditorSheet: View {
 
     private func save() {
         validationError = nil
+
+        // Keep-running path: project/start/note change in place, end stays nil.
+        // Goes through the keeper (it owns the running entry) — saving via the
+        // store alone would let the next clock-out resurrect the old fields.
+        if isEditingRunningEntry, keepRunning, var running = entry {
+            running.projectId = projectId
+            running.start = start
+            running.end = nil
+            running.note = note.isEmpty ? nil : note
+            var probe = running
+            probe.end = Date()          // clip finished neighbors up to "now"
+            clipNeighbors(around: probe)
+            state.updateRunningEntry(running)
+            dismiss()
+            return
+        }
+
         var saved = entry ?? TimeEntry(projectId: projectId, start: start, end: end,
                                        source: .manual)
         saved.projectId = projectId

@@ -69,6 +69,26 @@ final class ConfigTests: XCTestCase {
         XCTAssertEqual(merged[0].emoji, "🩺")
     }
 
+    func testOverrideAppsParseAndAppend() throws {
+        let team = try ConfigLoader.team(fromTOML: """
+        [[project]]
+        name = "Initech"
+        xledger_project = "10432"
+        xledger_activity = "DEV"
+        apps = ["Slack"]
+        """)
+        let personal = try ConfigLoader.personal(fromTOML: """
+        employee = "TK"
+        team_config_path = "x"
+
+        [[override]]
+        name = "Initech"
+        apps = ["Linear"]
+        """)
+        let merged = ConfigLoader.merge(team: team, overrides: personal.overrides)
+        XCTAssertEqual(merged[0].apps, ["Slack", "Linear"])
+    }
+
     func testBareIntegerNumericFieldsCoerce() throws {
         let personal = try ConfigLoader.personal(fromTOML: """
         employee = "TK"

@@ -52,7 +52,7 @@ yourself in TOML:
 | Terminal | cwd of your shells (foreground and background) |
 | tmux | per-pane cwds, active pane weighted |
 | AI coding tools | cwd of running `claude` / `codex` / `gemini` processes |
-| Frontmost app | app name + window title keywords |
+| Frontmost app | app name (`apps = ["Slack"]`) + window title keywords |
 | Browser tab (opt-in) | domain of the active tab — Safari, Chrome, Brave, Edge, Arc |
 | Idle | keyboard/mouse idle time, so lunch doesn't bill anyone |
 
@@ -88,8 +88,10 @@ from the week grid and the export. What happens on `Side quest` stays on
 </p>
 
 The CSV export was built for [xledger](https://xledger.com) timesheet import
-(project code, activity code, decimal hours per day), but it's just CSV —
-point it at whatever your accounting department worships.
+(project code, activity code, decimal hours per day) and speaks xledger's
+upload dialect — semicolon-separated fields, `yyyymmdd` dates, period
+decimals — but it's just CSV; point it at whatever your accounting
+department worships.
 
 ## Install
 
@@ -135,6 +137,7 @@ urls = ["github.com/initech"]          # active browser tab (opt-in)
 name = "Meetings"
 xledger_project = "T200000"
 xledger_activity = "MEET"
+apps = ["zoom.us", "Slack"]            # frontmost app, by name or bundle id
 
 [[project]]
 name = "Side quest"

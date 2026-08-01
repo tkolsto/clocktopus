@@ -64,6 +64,8 @@ struct ClocktopusApp: App {
     // The octopus is a template image: macOS forces it to the standard menubar
     // tint, so state is conveyed by SHAPE, not color (like the old SF Symbols):
     //   • confirmed running        → octopus + live timer text
+    //   • running + switch hint    → octopus + timer + "?" (sustained lead by a
+    //     DIFFERENT project — the persistent switch suggestion in the popover)
     //   • detected but unverified  → octopus + "?" (a provisional block is open,
     //     project unconfirmed — the old clock.badge.questionmark)
     //   • idle                     → octopus alone
@@ -73,7 +75,6 @@ struct ClocktopusApp: App {
     // NB: keep this a single flat HStack. In a MenuBarExtra label, a nested
     // HStack as the first child causes trailing siblings not to render, and
     // Image(systemName:) SF Symbols don't render here either — hence Text("?").
-    // Running and the "?" are mutually exclusive, so at most two elements show.
     private var menuBarLabel: some View {
         // HStack spacing is IGNORED when this label is rasterized (measured:
         // 5 vs 9 both render a ~3.5pt gap) — the icon-to-text gap is instead
@@ -82,6 +83,9 @@ struct ClocktopusApp: App {
             Image("MenuBarOcto")
             if let entry = state.runningEntry {
                 Text(timerText(entry)).monospacedDigit()
+                if state.switchSuggestion != nil {
+                    Text(" ?").font(.system(size: 12, weight: .bold))
+                }
             } else if !state.pendingBlocks.isEmpty {
                 Text("?").font(.system(size: 12, weight: .bold))
             }

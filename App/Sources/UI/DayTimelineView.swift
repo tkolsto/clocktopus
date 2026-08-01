@@ -17,6 +17,9 @@ struct DayTimelineView: View {
     @State private var reviewing: ProvisionalBlock?
     @State private var dragEdge: ResizeEdge?
     @State private var didInitialScroll = false
+    // Google-calendar-style drag-to-create on empty timeline space.
+    @State private var createAnchor: Date?
+    @State private var createInterval: DateInterval?
 
     private static let snapSeconds: TimeInterval = 300
     private static let minDuration: TimeInterval = 300
@@ -30,6 +33,12 @@ struct DayTimelineView: View {
 
     private static let timeFormatter: DateFormatter = {
         let f = DateFormatter(); f.dateFormat = "HH:mm"; f.locale = Locale(identifier: "en_US_POSIX")
+        return f
+    }()
+    /// For entries clipped at the day boundary, whose true start is on another
+    /// calendar day — "Jul 31 08:47" instead of a misleading bare "08:47".
+    private static let dayTimeFormatter: DateFormatter = {
+        let f = DateFormatter(); f.dateFormat = "MMM d HH:mm"; f.locale = Locale(identifier: "en_US_POSIX")
         return f
     }()
 
@@ -69,16 +78,31 @@ struct DayTimelineView: View {
                     ScrollView {
                         ZStack(alignment: .topLeading) {
                             hourGrid
+                            // Hover is computed by hand from an AppKit tracking
+                            // view: SwiftUI's .onHover tracking areas inside a
+                            // ScrollView don't follow the scroll offset, so
+                            // per-card hover fired on the card scroll-offset
+                            // pixels away from the cursor.
+                            MouseTrackingView { point in
+                                updateHover(point, containerWidth: geo.size.width)
+                            }
+                            .frame(width: geo.size.width, height: Self.hourHeight * 24)
                             let places = placements()
                             ForEach(items) { item in
                                 itemView(item, place: places[item.id] ?? Placement(column: 0, columns: 1),
                                          containerWidth: geo.size.width)
                             }
-                            nowLine(context.date)
+                            if let interval = createInterval {
+                                creationGhost(interval, containerWidth: geo.size.width)
+                            }
+                            nowLine(context.date).zIndex(5)
+                            // Above the hovered card, which zIndexes to 2.
                             if let block = reviewing {
                                 reviewOverlay(block, places: places, containerWidth: geo.size.width)
+                                    .zIndex(10)
                             } else if let hb = blocks.first(where: { $0.id == hovered }) {
                                 hovercard(hb, places: places, containerWidth: geo.size.width)
+                                    .zIndex(10)
                             }
                         }
                         .frame(height: Self.hourHeight * 24)
@@ -99,7 +123,7 @@ struct DayTimelineView: View {
             EntryEditorSheet(entry: entry, defaultStart: entry.start)
         }
         .sheet(item: $creatingAt) { anchor in
-            EntryEditorSheet(entry: nil, defaultStart: anchor.date)
+            EntryEditorSheet(entry: nil, defaultStart: anchor.date, defaultEnd: anchor.end)
         }
     }
 
@@ -135,13 +159,98 @@ struct DayTimelineView: View {
                     Rectangle().fill(.quaternary).frame(height: 1)
                 }
                 .frame(height: Self.hourHeight, alignment: .top)
-                .contentShape(Rectangle())
-                .onTapGesture {
-                    let start = Calendar.current.date(byAdding: .hour, value: row, to: dayInterval.start)!
-                    creatingAt = CreationAnchor(date: start)
-                }
             }
         }
+        .contentShape(Rectangle())
+        // Drag out a box on empty space to create an entry (calendar-style);
+        // a plain click still opens the editor with a default hour. Cards sit
+        // above the grid, so drags starting on an entry never reach this.
+        .gesture(
+            DragGesture(minimumDistance: 0)
+                .onChanged { value in
+                    isResizing = true          // stop the ScrollView stealing the drag
+                    if createAnchor == nil { createAnchor = date(atY: value.startLocation.y) }
+                    let a = createAnchor!, b = date(atY: value.location.y)
+                    createInterval = DateInterval(start: min(a, b), end: max(a, b))
+                }
+                .onEnded { value in
+                    defer { createAnchor = nil; createInterval = nil; isResizing = false }
+                    guard let a = createAnchor else { return }
+                    if abs(value.translation.height) < 5 {
+                        creatingAt = CreationAnchor(date: snap(a))
+                        return
+                    }
+                    let b = date(atY: value.location.y)
+                    let s = snap(min(a, b))
+                    var e = snap(max(a, b))
+                    if e.timeIntervalSince(s) < Self.minDuration { e = s.addingTimeInterval(Self.minDuration) }
+                    creatingAt = CreationAnchor(date: s, end: e)
+                }
+        )
+    }
+
+    // MARK: - Hover (manual hit-test)
+
+    @State private var cursorIsResize = false
+
+    /// Resolve which card the mouse is over from raw content coordinates,
+    /// matching the render geometry (columns, min height, drag previews).
+    /// Later items win on overlap, mirroring ZStack draw order.
+    private func updateHover(_ point: CGPoint?, containerWidth: CGFloat) {
+        guard let point else {
+            hovered = nil
+            setResizeCursor(false)
+            return
+        }
+        let places = placements()
+        var hit: UUID?
+        var nearEdge = false
+        for item in items {
+            let (id, s, e): (UUID, Date, Date)
+            switch item {
+            case .entry(let en): (id, s, e) = (en.id, displayStart(en.id, en.start), displayEnd(en.id, en.end ?? Date()))
+            case .block(let b): (id, s, e) = (b.id, displayStart(b.id, b.start), displayEnd(b.id, b.end))
+            }
+            let place = places[item.id] ?? Placement(column: 0, columns: 1)
+            let f = columnFrame(place, containerWidth)
+            let rect = CGRect(x: f.x, y: yOffset(for: s), width: f.w, height: height(from: s, to: e))
+            if rect.contains(point) {
+                hit = id
+                nearEdge = point.y - rect.minY <= Self.handleHeight
+                    || rect.maxY - point.y <= Self.handleHeight
+            }
+        }
+        if hovered != hit { hovered = hit }
+        setResizeCursor(hit != nil && nearEdge)
+    }
+
+    private func setResizeCursor(_ on: Bool) {
+        guard on != cursorIsResize else { return }
+        cursorIsResize = on
+        if on { NSCursor.resizeUpDown.push() } else { NSCursor.pop() }
+    }
+
+    private func date(atY y: CGFloat) -> Date {
+        let clamped = min(max(y, 0), Self.hourHeight * 24)
+        return dayInterval.start.addingTimeInterval(TimeInterval(clamped / Self.hourHeight) * 3600)
+    }
+
+    /// Live preview of the box being dragged out — tentative until release,
+    /// when the editor opens to pick the project.
+    private func creationGhost(_ interval: DateInterval, containerWidth: CGFloat) -> some View {
+        let h = height(from: interval.start, to: interval.end)
+        let usable = max(0, containerWidth - Self.leftGutter - Self.rightPad)
+        return RoundedRectangle(cornerRadius: 6)
+            .fill(Color.accentColor.opacity(0.18))
+            .overlay(RoundedRectangle(cornerRadius: 6)
+                .strokeBorder(Color.accentColor.opacity(0.7), lineWidth: 1.2))
+            .overlay(alignment: .topLeading) {
+                label("New entry", timeRange(snap(interval.start), snap(interval.end)),
+                      h: h, color: .primary, secondaryTime: true)
+            }
+            .frame(width: usable, height: h, alignment: .topLeading)
+            .position(x: Self.leftGutter + usable / 2, y: yOffset(for: interval.start) + h / 2)
+            .allowsHitTesting(false)
     }
 
     // MARK: - Column layout
@@ -234,20 +343,29 @@ struct DayTimelineView: View {
         let name = state.project(entry.projectId)?.name ?? entry.projectId
         let color = state.color(for: entry.projectId)
         let h = height(from: start, to: end)
-        let resizable = entry.end != nil
-        let showGrips = resizable && (hovered == entry.id || dragPreview?.id == entry.id)
+        let isRunning = entry.end == nil
+        let showGrips = hovered == entry.id || dragPreview?.id == entry.id
         let frame = columnFrame(place, containerWidth)
+        // A clipped entry's true start is on another day — say so instead of
+        // showing a bare "08:47" that reads as today.
+        let startText = start < dayInterval.start
+            ? Self.dayTimeFormatter.string(from: start) : Self.timeFormatter.string(from: start)
+        let timeText = "\(startText)–\(Self.timeFormatter.string(from: end))"
 
         return RoundedRectangle(cornerRadius: 6)
             .fill(color.gradient)
             .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(.white.opacity(0.14), lineWidth: 0.5))
-            .overlay(alignment: .topLeading) { label(name, timeRange(start, end), h: h, color: .white) }
+            .overlay(alignment: .topLeading) { label(name, timeText, h: h, color: .white) }
+            // The running entry's start is adjustable (top grip); its end is
+            // "now" and stays pinned — no bottom grip.
             .overlay(alignment: .top) { if showGrips { resizeHandle(id: entry.id, start: entry.start, end: entry.end ?? Date(), edge: .top) } }
-            .overlay(alignment: .bottom) { if showGrips { resizeHandle(id: entry.id, start: entry.start, end: entry.end ?? Date(), edge: .bottom) } }
+            .overlay(alignment: .bottom) { if showGrips && !isRunning { resizeHandle(id: entry.id, start: entry.start, end: entry.end ?? Date(), edge: .bottom) } }
             .frame(width: frame.w, height: h, alignment: .topLeading)
             .position(x: frame.x + frame.w / 2, y: yOffset(for: start) + h / 2)
-            .onHover { hovered = $0 ? entry.id : (hovered == entry.id ? nil : hovered) }
             .onTapGesture { editing = entry }
+            // Hovered card above its neighbours: a short entry renders taller
+            // than its time span, so the next card can cover its bottom grip.
+            .zIndex(showGrips ? 2 : 0)
             .help(name)
     }
 
@@ -284,8 +402,8 @@ struct DayTimelineView: View {
             .overlay(alignment: .bottom) { if showGrips { resizeHandle(id: block.id, start: block.start, end: block.end, edge: .bottom, tint: color) } }
             .frame(width: frame.w, height: h, alignment: .topLeading)
             .position(x: frame.x + frame.w / 2, y: yOffset(for: start) + h / 2)
-            .onHover { hovered = $0 ? block.id : (hovered == block.id ? nil : hovered) }
             .onTapGesture { reviewing = block }
+            .zIndex(showGrips ? 2 : 0)
             .help(block.evidence)
     }
 
@@ -358,7 +476,14 @@ struct DayTimelineView: View {
         Rectangle()
             .fill(Color.white.opacity(0.001))
             .frame(height: Self.handleHeight)
-            .overlay(Capsule().fill(tint.opacity(0.8)).frame(width: 26, height: 3))
+            // Outline + shadow so the capsule reads on any project colour —
+            // plain white was invisible on the bright ones.
+            .overlay(
+                Capsule().fill(tint.opacity(0.95))
+                    .frame(width: 26, height: 3.5)
+                    .overlay(Capsule().strokeBorder(.black.opacity(0.35), lineWidth: 0.5))
+                    .shadow(color: .black.opacity(0.5), radius: 1, y: 0.5)
+            )
             .contentShape(Rectangle())
             .highPriorityGesture(
                 DragGesture(minimumDistance: 0)
@@ -401,7 +526,11 @@ struct DayTimelineView: View {
             if e.timeIntervalSince(s) < Self.minDuration { e = s.addingTimeInterval(Self.minDuration) }
         }
         if var entry = entries.first(where: { $0.id == p.id }) {
-            entry.start = s; entry.end = e; state.saveResizedEntry(entry)
+            entry.start = s
+            // A running entry has no end — only its start moved; writing the
+            // preview's snapshot end would silently stop the timer.
+            if entry.end != nil { entry.end = e }
+            state.saveResizedEntry(entry)
         } else if var block = blocks.first(where: { $0.id == p.id }) {
             block.start = s; block.end = e; state.saveResizedBlock(block)
         }
@@ -413,17 +542,24 @@ struct DayTimelineView: View {
     }
 
     /// Clamp an edge at the nearest neighbour (entry or ghost) so a resize can
-    /// never create an overlap.
+    /// never create an overlap. Edges normally stop at the displayed day, but
+    /// an entry that already crosses the boundary keeps its true edge draggable
+    /// (the old day-edge clamp made grabbing a clipped entry's grip snap its
+    /// multi-day start to the day's start hour). Neighbours are fetched from
+    /// the store over a padded window, since `entries` only covers this day.
     private func neighborBounds(excluding id: UUID, start: Date, end: Date) -> (lower: Date, upper: Date) {
-        var lower = dayInterval.start
-        var upper = dayInterval.end
+        var lower = start < dayInterval.start ? Date.distantPast : dayInterval.start
+        var upper = end > dayInterval.end ? Date.distantFuture : dayInterval.end
         func consider(_ oid: UUID, _ s: Date, _ e: Date) {
             guard oid != id else { return }
             if e <= start { lower = max(lower, e) }
             if s >= end { upper = min(upper, s) }
         }
-        for e in entries { consider(e.id, e.start, e.end ?? Date()) }
-        for b in blocks { consider(b.id, b.start, b.end) }
+        let pad: TimeInterval = 86_400
+        let window = DateInterval(start: start.addingTimeInterval(-pad),
+                                  end: end.addingTimeInterval(pad))
+        for e in (try? state.store.entries(in: window)) ?? [] { consider(e.id, e.start, e.end ?? Date()) }
+        for b in state.pendingBlocks where b.end > b.start { consider(b.id, b.start, b.end) }
         return (lower, upper)
     }
 }
@@ -466,6 +602,44 @@ private struct GhostReviewPanel: View {
     }
 }
 
+/// Reports mouse position over the timeline content in the content's own
+/// coordinates. AppKit converts through the scroll offset correctly, unlike
+/// SwiftUI's .onHover tracking areas, which go stale inside a ScrollView.
+/// Never intercepts clicks or scrolls (hitTest nil).
+private struct MouseTrackingView: NSViewRepresentable {
+    var onMove: (CGPoint?) -> Void
+
+    func makeNSView(context: Context) -> Tracker { Tracker(onMove: onMove) }
+    func updateNSView(_ view: Tracker, context: Context) { view.onMove = onMove }
+
+    final class Tracker: NSView {
+        var onMove: (CGPoint?) -> Void
+
+        init(onMove: @escaping (CGPoint?) -> Void) {
+            self.onMove = onMove
+            super.init(frame: .zero)
+        }
+        required init?(coder: NSCoder) { fatalError("unused") }
+
+        override var isFlipped: Bool { true }   // match SwiftUI's top-left origin
+
+        override func updateTrackingAreas() {
+            super.updateTrackingAreas()
+            trackingAreas.forEach(removeTrackingArea)
+            addTrackingArea(NSTrackingArea(
+                rect: .zero,
+                options: [.mouseMoved, .mouseEnteredAndExited, .activeAlways, .inVisibleRect],
+                owner: self, userInfo: nil))
+        }
+
+        override func mouseMoved(with event: NSEvent) {
+            onMove(convert(event.locationInWindow, from: nil))
+        }
+        override func mouseExited(with event: NSEvent) { onMove(nil) }
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
+    }
+}
+
 struct DragPreview: Equatable {
     let id: UUID
     var start: Date
@@ -477,9 +651,11 @@ struct DragPreview: Equatable {
 struct CreationAnchor: Identifiable {
     let id: TimeInterval
     let date: Date
+    let end: Date?
 
-    init(date: Date) {
+    init(date: Date, end: Date? = nil) {
         self.date = date
+        self.end = end
         self.id = date.timeIntervalSince1970
     }
 }

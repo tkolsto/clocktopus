@@ -1,6 +1,13 @@
 import Foundation
 
+/// Emits xledger's upload-file dialect: semicolon-separated fields, yyyymmdd
+/// dates, period decimal separator. The exact timesheet column layout is not
+/// public (xledger hands it out on request) — until we have it, the columns
+/// here are our own; only the dialect is theirs. Adjusting to the real layout
+/// should only touch the header string and the row assembly in `csv`.
 public struct XledgerExporter {
+    static let separator = ";"
+
     let employee: String
     let incrementHours: Double
     let includeExact: Bool
@@ -17,7 +24,7 @@ public struct XledgerExporter {
         let workday = WorkdayCalendar(dayStartHour: dayStartHour, timeZone: timeZone)
 
         let dayFormatter = DateFormatter()
-        dayFormatter.dateFormat = "yyyy-MM-dd"
+        dayFormatter.dateFormat = "yyyyMMdd"
         dayFormatter.timeZone = timeZone
         dayFormatter.locale = Locale(identifier: "en_US_POSIX")
 
@@ -31,9 +38,10 @@ public struct XledgerExporter {
             days[day, default: [:]][entry.projectId, default: 0] += hours
         }
 
-        var header = "date,employee,project,activity,hours"
-        if includeExact { header += ",exact_hours" }
-        header += ",description"
+        var headerFields = ["date", "employee", "project", "activity", "hours"]
+        if includeExact { headerFields.append("exact_hours") }
+        headerFields.append("description")
+        let header = headerFields.joined(separator: Self.separator)
 
         var rows: [String] = []
         for day in days.keys.sorted() {
@@ -46,11 +54,11 @@ public struct XledgerExporter {
                 }
                 .sorted { $0.0.xledgerProject < $1.0.xledgerProject }
             for (project, hours, exactHours) in ordered {
-                var row = "\(day),\(employee),\(project.xledgerProject)," +
-                          "\(project.xledgerActivity),\(format(hours))"
-                if includeExact { row += ",\(format(exactHours))" }
-                row += ","
-                rows.append(row)
+                var fields = [day, employee, project.xledgerProject,
+                              project.xledgerActivity, format(hours)]
+                if includeExact { fields.append(format(exactHours)) }
+                fields.append("")
+                rows.append(fields.joined(separator: Self.separator))
             }
         }
         return ([header] + rows).joined(separator: "\n")

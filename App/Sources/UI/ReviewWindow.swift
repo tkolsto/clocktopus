@@ -6,6 +6,7 @@ struct ReviewWindow: View {
     // A time inside the selected work-day; set to the current one on appear.
     @State private var selectedDay = Date()
     @State private var showDayPicker = false
+    @State private var confirmDismissAll = false
 
     var body: some View {
         TabView {
@@ -24,18 +25,36 @@ struct ReviewWindow: View {
                 Button("▶") { shift(1) }
                 Button("Today") { selectedDay = state.workday.dayInterval(for: Date()).start }
                 if !state.pendingBlocks.isEmpty {
-                    HStack(spacing: 4) {
-                        Image(systemName: "questionmark.circle.fill").font(.caption).foregroundStyle(.orange)
-                        Text("\(state.pendingBlocks.count) unverified").font(.caption).foregroundStyle(.secondary)
+                    // The chip is a menu: with dozens of stale suggestions the
+                    // one-by-one flow needs a bulk exit.
+                    Menu {
+                        Button("Dismiss all before today") {
+                            state.dismissBlocks(endedBefore: state.workday.dayInterval(for: Date()).start)
+                        }
+                        Button("Dismiss all…", role: .destructive) { confirmDismissAll = true }
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: "questionmark.circle.fill").font(.caption).foregroundStyle(.orange)
+                            Text("\(state.pendingBlocks.count) unverified").font(.caption).foregroundStyle(.secondary)
+                        }
+                        .padding(.horizontal, 8).padding(.vertical, 3)
+                        .background(Capsule().fill(Color.orange.opacity(0.12)))
                     }
-                    .padding(.horizontal, 8).padding(.vertical, 3)
-                    .background(Capsule().fill(Color.orange.opacity(0.12)))
-                    .help("Dashed cards on the timeline — click one to confirm or dismiss")
+                    .menuStyle(.borderlessButton)
+                    .menuIndicator(.hidden)
+                    .fixedSize()
+                    .help("Dashed cards on the timeline — click one to confirm or dismiss, or bulk-dismiss here")
                 }
                 Spacer()
             }
             .padding(8)
             DayTimelineView(day: selectedDay)
+        }
+        .confirmationDialog("Dismiss all \(state.pendingBlocks.count) unverified blocks?",
+                            isPresented: $confirmDismissAll) {
+            Button("Dismiss all", role: .destructive) { state.dismissBlocks(endedBefore: nil) }
+        } message: {
+            Text("They disappear from the timeline and won't be suggested again.")
         }
     }
 

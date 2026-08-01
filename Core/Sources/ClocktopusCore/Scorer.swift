@@ -52,8 +52,13 @@ public struct Scorer {
     /// Instantaneous score of one observation against project rules.
     public static func matchProjects(dirs: [ObservedDir], windowTitle: String?,
                                      frontmostApp: String?, activeTabURL: String? = nil,
+                                     frontmostAppName: String? = nil,
                                      projects: [Project]) -> [String: Double] {
         let url = activeTabURL?.lowercased()
+        // A project's `apps` list matches the frontmost app by EITHER its
+        // human name ("Slack") or its bundle id ("com.tinyspeck.slackmacgap"),
+        // case-insensitively — config authors write the name they see.
+        let appIdentifiers = Set([frontmostApp, frontmostAppName].compactMap { $0?.lowercased() })
         var fg: [String: Double] = [:]   // foreground: what you're looking at now
         var bg: [String: Double] = [:]   // background: parked panes / AI elsewhere
 
@@ -77,7 +82,7 @@ public struct Scorer {
         }
 
         for project in projects {
-            if let app = frontmostApp, project.apps.contains(app) {
+            if project.apps.contains(where: { appIdentifiers.contains($0.lowercased()) }) {
                 fg[project.id] = max(fg[project.id] ?? 0, appWeight)
             }
             if let title = windowTitle?.lowercased(),
@@ -104,7 +109,9 @@ public struct Scorer {
     public mutating func ingest(_ obs: Observation) {
         let scores = Self.matchProjects(dirs: obs.dirs, windowTitle: obs.windowTitle,
                                         frontmostApp: obs.frontmostApp,
-                                        activeTabURL: obs.activeTabURL, projects: projects)
+                                        activeTabURL: obs.activeTabURL,
+                                        frontmostAppName: obs.frontmostAppName,
+                                        projects: projects)
         history.append((obs.timestamp, scores))
         history.removeAll { obs.timestamp.timeIntervalSince($0.timestamp) > Self.windowMax }
     }

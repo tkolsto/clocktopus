@@ -169,4 +169,31 @@ final class ScorerTests: XCTestCase {
         // 20 minutes later the window is empty
         XCTAssertNil(scorer.leader(at: t0.addingTimeInterval(20 * 60)))
     }
+
+    func testAppsMatchFriendlyNameOrBundleIdCaseInsensitively() {
+        // Config authors write the app name they see ("Slack"), but the
+        // observation's frontmostApp is a bundle id — both must match.
+        let comms = Project(name: "Comms", xledgerProject: "3", xledgerActivity: "MEET",
+                            apps: ["Slack"])
+        let byName = Scorer.matchProjects(
+            dirs: [], windowTitle: nil,
+            frontmostApp: "com.tinyspeck.slackmacgap",
+            frontmostAppName: "slack",                    // case differs
+            projects: [comms])
+        XCTAssertEqual(byName["comms"], Scorer.appWeight)
+
+        let zoom = Project(name: "Comms", xledgerProject: "3", xledgerActivity: "MEET",
+                           apps: ["us.zoom.xos"])
+        let byBundleId = Scorer.matchProjects(
+            dirs: [], windowTitle: nil,
+            frontmostApp: "us.zoom.xos", frontmostAppName: "zoom.us",
+            projects: [zoom])
+        XCTAssertEqual(byBundleId["comms"], Scorer.appWeight)
+
+        let noMatch = Scorer.matchProjects(
+            dirs: [], windowTitle: nil,
+            frontmostApp: "com.apple.finder", frontmostAppName: "Finder",
+            projects: [comms])
+        XCTAssertNil(noMatch["comms"])
+    }
 }
