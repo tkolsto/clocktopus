@@ -38,28 +38,28 @@ final class ScorerTests: XCTestCase {
 
     func testMoreSpecificDirRuleWins() {
         let home = NSString(string: "~").expandingTildeInPath
-        // Priv catch-all "~/src/" and Abel specific "~/src/ttt" both match the
+        // Personal catch-all "~/src/" and Client specific "~/src/ttt" both match the
         // active pane in ~/src/ttt — the specific rule must win, not tie.
-        let priv = Project(name: "Priv", xledgerProject: "1", xledgerActivity: "P", dirs: ["~/src/"])
-        let abel = Project(name: "Abel", xledgerProject: "2", xledgerActivity: "A", dirs: ["~/src/ttt/"])
+        let personal = Project(name: "Personal", xledgerProject: "1", xledgerActivity: "P", dirs: ["~/src/"])
+        let client = Project(name: "Client", xledgerProject: "2", xledgerActivity: "A", dirs: ["~/src/ttt/"])
         let scores = Scorer.matchProjects(
             dirs: [ObservedDir(path: home + "/src/ttt", kind: .tmuxActivePane)],
-            windowTitle: nil, frontmostApp: nil, projects: [priv, abel])
-        XCTAssertEqual(scores["abel"]!, 0.8, accuracy: 0.001)   // specific rule wins
-        XCTAssertNil(scores["priv"])                            // catch-all suppressed for this dir
+            windowTitle: nil, frontmostApp: nil, projects: [personal, client])
+        XCTAssertEqual(scores["client"]!, 0.8, accuracy: 0.001)   // specific rule wins
+        XCTAssertNil(scores["personal"])                          // catch-all suppressed for this dir
     }
 
     func testCatchAllStillMatchesUnclaimedDirs() {
         let home = NSString(string: "~").expandingTildeInPath
         // A path under the catch-all but not under any specific rule still maps
         // to the catch-all project.
-        let priv = Project(name: "Priv", xledgerProject: "1", xledgerActivity: "P", dirs: ["~/src/"])
-        let abel = Project(name: "Abel", xledgerProject: "2", xledgerActivity: "A", dirs: ["~/src/ttt/"])
+        let personal = Project(name: "Personal", xledgerProject: "1", xledgerActivity: "P", dirs: ["~/src/"])
+        let client = Project(name: "Client", xledgerProject: "2", xledgerActivity: "A", dirs: ["~/src/ttt/"])
         let scores = Scorer.matchProjects(
             dirs: [ObservedDir(path: home + "/src/scratch", kind: .frontmostShell)],
-            windowTitle: nil, frontmostApp: nil, projects: [priv, abel])
-        XCTAssertEqual(scores["priv"]!, 1.0, accuracy: 0.001)
-        XCTAssertNil(scores["abel"])
+            windowTitle: nil, frontmostApp: nil, projects: [personal, client])
+        XCTAssertEqual(scores["personal"]!, 1.0, accuracy: 0.001)
+        XCTAssertNil(scores["client"])
     }
 
     func testBackgroundOnlyProjectIsGatedOut() {

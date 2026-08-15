@@ -13,10 +13,24 @@ import AppKit
 final class WindowPolicy {
     static let shared = WindowPolicy()
     private var observer: NSObjectProtocol?
+    private static let presentationAttempts = 4
 
-    /// Call before activating the app to open a managed window.
-    func willOpenWindow() {
+    /// Dismiss the menubar popover, open (or reuse) a managed SwiftUI scene,
+    /// and raise it once SwiftUI has materialized its NSWindow.
+    func present(id: String, openWindow: () -> Void) {
         NSApp.setActivationPolicy(.regular)
+        if let keyWindow = NSApp.keyWindow, !Self.isManaged(keyWindow) {
+            keyWindow.orderOut(nil)
+        }
+
+        if let window = Self.managedWindow(id: id, among: NSApp.windows) {
+            Self.bringToFront(window)
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
+
+        openWindow()
+        focusWhenAvailable(id: id, attemptsRemaining: Self.presentationAttempts)
     }
 
     func start() {
@@ -43,15 +57,40 @@ final class WindowPolicy {
         }
     }
 
+    static func managedWindow(id: String, among windows: [NSWindow]) -> NSWindow? {
+        windows.first { matches($0, id: id) }
+    }
+
+    static func bringToFront(_ window: NSWindow) {
+        if window.isMiniaturized { window.deminiaturize(nil) }
+        window.makeKeyAndOrderFront(nil)
+    }
+
+    private func focusWhenAvailable(id: String, attemptsRemaining: Int) {
+        if let window = Self.managedWindow(id: id, among: NSApp.windows) {
+            Self.bringToFront(window)
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
+        guard attemptsRemaining > 0 else {
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
+        DispatchQueue.main.async { [weak self] in
+            self?.focusWhenAvailable(id: id, attemptsRemaining: attemptsRemaining - 1)
+        }
+    }
+
     /// The Review and Preferences windows — not the menubar popover or panels.
     /// SwiftUI derives the NSWindow identifier from the scene id; match the
     /// title as a fallback in case that changes.
     private static func isManaged(_ window: NSWindow) -> Bool {
-        if let id = window.identifier?.rawValue,
-           id.hasPrefix("review") || id.hasPrefix("preferences") {
-            return true
-        }
-        return window.title == "Clocktopus Review"
-            || window.title == "Clocktopus Preferences"
+        matches(window, id: "review") || matches(window, id: "preferences")
+    }
+
+    private static func matches(_ window: NSWindow, id: String) -> Bool {
+        if window.identifier?.rawValue.hasPrefix(id) == true { return true }
+        let title = id == "review" ? "Clocktopus Review" : "Clocktopus Preferences"
+        return window.title == title
     }
 }

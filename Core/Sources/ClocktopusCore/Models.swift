@@ -8,6 +8,9 @@ public struct Project: Codable, Equatable, Identifiable, Sendable {
     public var apps: [String]
     public var keywords: [String]
     public var urls: [String]          // matched as substrings of the active browser tab URL
+    /// Matched as substrings of the frontmost browser window's profile name
+    /// (e.g. "acme.test" matches Chrome's "Alex (acme.test)").
+    public var browserProfiles: [String]
     public var isPrivate: Bool         // tracked locally but excluded from the xledger export
     public var emoji: String?
 
@@ -21,7 +24,8 @@ public struct Project: Codable, Equatable, Identifiable, Sendable {
 
     public init(name: String, xledgerProject: String, xledgerActivity: String,
                 dirs: [String] = [], apps: [String] = [], keywords: [String] = [],
-                urls: [String] = [], isPrivate: Bool = false, emoji: String? = nil) {
+                urls: [String] = [], browserProfiles: [String] = [],
+                isPrivate: Bool = false, emoji: String? = nil) {
         self.name = name
         self.xledgerProject = xledgerProject
         self.xledgerActivity = xledgerActivity
@@ -29,6 +33,7 @@ public struct Project: Codable, Equatable, Identifiable, Sendable {
         self.apps = apps
         self.keywords = keywords
         self.urls = urls
+        self.browserProfiles = browserProfiles
         self.isPrivate = isPrivate
         self.emoji = emoji
     }
@@ -70,8 +75,8 @@ public enum BlockStatus: String, Codable, Sendable {
 /// The kinds of signal that contributed to a detected block, for at-a-glance
 /// icons in the timeline. `displayOrder` gives a stable icon ordering.
 public enum SignalKind: String, Codable, Sendable, CaseIterable {
-    case terminal, tmux, aiTool, browser, app
-    public static let displayOrder: [SignalKind] = [.terminal, .tmux, .aiTool, .browser, .app]
+    case terminal, tmux, aiTool, browser, profile, app
+    public static let displayOrder: [SignalKind] = [.terminal, .tmux, .aiTool, .browser, .profile, .app]
 }
 
 public struct ProvisionalBlock: Codable, Equatable, Identifiable, Sendable {
@@ -154,5 +159,22 @@ public struct Observation: Codable, Equatable, Sendable {
     public static func host(fromURL url: String) -> String? {
         guard let host = URLComponents(string: url)?.host, !host.isEmpty else { return nil }
         return host
+    }
+
+    /// Chromium browsers append the window's profile to its accessibility
+    /// title when more than one profile exists: "Docs - Google Chrome -
+    /// Alex (acme.test)". Extracts that trailing profile display name, or nil
+    /// for non-browser titles, single-profile windows, and incognito windows
+    /// (whose titles end in "(Incognito)" with no profile suffix).
+    public static func browserProfile(fromWindowTitle title: String?) -> String? {
+        guard let title else { return nil }
+        let browsers = ["Google Chrome Beta", "Google Chrome Canary", "Google Chrome",
+                        "Microsoft Edge", "Brave Browser", "Chromium", "Vivaldi"]
+        for browser in browsers {
+            guard let r = title.range(of: " - \(browser) - ", options: .backwards) else { continue }
+            let profile = title[r.upperBound...].trimmingCharacters(in: .whitespaces)
+            return profile.isEmpty ? nil : profile
+        }
+        return nil
     }
 }

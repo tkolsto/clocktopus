@@ -4,6 +4,7 @@
 xcuserdata/
 DerivedData/
 .swiftpm/
+.worktrees/
 
 # xcodebuild derived data (custom -derivedDataPath)
 build/

@@ -30,7 +30,8 @@ public struct Scorer {
     ]
     static let appWeight = 0.5
     static let keywordWeight = 0.3
-    static let urlWeight = 0.5   // active browser-tab URL substring match
+    static let urlWeight = 0.5       // active browser-tab URL substring match
+    static let profileWeight = 0.5   // browser window's profile name match
     /// Signals for what you're actually looking at. Everything else
     /// (background shells, background tmux panes, parked AI-tool sessions) is
     /// background and only counts as reinforcement for a foreground project.
@@ -55,6 +56,7 @@ public struct Scorer {
                                      frontmostAppName: String? = nil,
                                      projects: [Project]) -> [String: Double] {
         let url = activeTabURL?.lowercased()
+        let browserProfile = Observation.browserProfile(fromWindowTitle: windowTitle)?.lowercased()
         // A project's `apps` list matches the frontmost app by EITHER its
         // human name ("Slack") or its bundle id ("com.tinyspeck.slackmacgap"),
         // case-insensitively — config authors write the name they see.
@@ -91,6 +93,10 @@ public struct Scorer {
             }
             if let url, project.urls.contains(where: { url.contains($0.lowercased()) }) {
                 fg[project.id] = max(fg[project.id] ?? 0, urlWeight)
+            }
+            if let browserProfile,
+               project.browserProfiles.contains(where: { browserProfile.contains($0.lowercased()) }) {
+                fg[project.id] = max(fg[project.id] ?? 0, profileWeight)
             }
         }
 

@@ -9,6 +9,7 @@ extension SignalKind {
         case .tmux: return "squares.below.rectangle"
         case .aiTool: return "sparkles"
         case .browser: return "globe"
+        case .profile: return "person.crop.circle"
         case .app: return "macwindow"
         }
     }

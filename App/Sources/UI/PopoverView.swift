@@ -190,14 +190,10 @@ struct PopoverView: View {
         Button("Preferences") { open("preferences") }
     }
 
-    /// Bring the app forward before opening a window — otherwise an accessory
-    /// (LSUIElement) app's window appears behind other apps with no focus.
     private func openReview() { open("review") }
 
     private func open(_ id: String) {
-        WindowPolicy.shared.willOpenWindow()
-        NSApp.activate(ignoringOtherApps: true)
-        openWindow(id: id)
+        WindowPolicy.shared.present(id: id) { openWindow(id: id) }
     }
 
     static func hm(_ interval: TimeInterval) -> String {

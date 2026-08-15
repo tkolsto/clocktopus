@@ -53,7 +53,7 @@ final class WorkdayCalendarTests: XCTestCase {
                                asOf: osloDate(2026, 7, 26, 12), dayStartHour: 4)
         let rows = csv.split(separator: "\n").map(String.init)
         XCTAssertEqual(rows.count, 2, "header + one merged row: \(csv)")
-        XCTAssertTrue(rows[1].hasPrefix("20260725;TK;10432;DEV;3.00"), rows[1])
+        XCTAssertTrue(rows[1].hasPrefix("TK;10432;;;;DEV;;;;20260725;;;3;3;"), rows[1])
     }
 
     func testWeekIntervalStartsAtDayStartHour() {

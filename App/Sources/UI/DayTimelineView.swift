@@ -20,6 +20,9 @@ struct DayTimelineView: View {
     // Google-calendar-style drag-to-create on empty timeline space.
     @State private var createAnchor: Date?
     @State private var createInterval: DateInterval?
+    // Measured overlay heights, for fitting them inside the day content.
+    @State private var reviewPanelHeight: CGFloat = 0
+    @State private var hovercardHeight: CGFloat = 0
 
     private static let snapSeconds: TimeInterval = 300
     private static let minDuration: TimeInterval = 300
@@ -108,6 +111,16 @@ struct DayTimelineView: View {
                         .frame(height: Self.hourHeight * 24)
                     }
                     .scrollDisabled(isResizing)
+                    .onChange(of: reviewing?.id) { id in
+                        // The panel can open outside the visible viewport (late
+                        // blocks) — bring it into view once it has laid out.
+                        guard id != nil else { return }
+                        DispatchQueue.main.async {
+                            withAnimation(.easeOut(duration: 0.15)) {
+                                proxy.scrollTo("review-panel")
+                            }
+                        }
+                    }
                     .onAppear {
                         // Open scrolled to "now" (today) or ~09:00 otherwise.
                         guard !didInitialScroll else { return }
@@ -216,8 +229,9 @@ struct DayTimelineView: View {
             let rect = CGRect(x: f.x, y: yOffset(for: s), width: f.w, height: height(from: s, to: e))
             if rect.contains(point) {
                 hit = id
-                nearEdge = point.y - rect.minY <= Self.handleHeight
-                    || rect.maxY - point.y <= Self.handleHeight
+                let zone = Self.gripZoneHeight(cardHeight: rect.height)
+                nearEdge = point.y - rect.minY <= zone
+                    || rect.maxY - point.y <= zone
             }
         }
         if hovered != hit { hovered = hit }
@@ -358,8 +372,8 @@ struct DayTimelineView: View {
             .overlay(alignment: .topLeading) { label(name, timeText, h: h, color: .white) }
             // The running entry's start is adjustable (top grip); its end is
             // "now" and stays pinned — no bottom grip.
-            .overlay(alignment: .top) { if showGrips { resizeHandle(id: entry.id, start: entry.start, end: entry.end ?? Date(), edge: .top) } }
-            .overlay(alignment: .bottom) { if showGrips && !isRunning { resizeHandle(id: entry.id, start: entry.start, end: entry.end ?? Date(), edge: .bottom) } }
+            .overlay(alignment: .top) { if showGrips { resizeHandle(id: entry.id, start: entry.start, end: entry.end ?? Date(), edge: .top, cardHeight: h, onTap: { editing = entry }) } }
+            .overlay(alignment: .bottom) { if showGrips && !isRunning { resizeHandle(id: entry.id, start: entry.start, end: entry.end ?? Date(), edge: .bottom, cardHeight: h, onTap: { editing = entry }) } }
             .frame(width: frame.w, height: h, alignment: .topLeading)
             .position(x: frame.x + frame.w / 2, y: yOffset(for: start) + h / 2)
             .onTapGesture { editing = entry }
@@ -398,8 +412,8 @@ struct DayTimelineView: View {
                 }
                 .padding(.horizontal, 7).padding(.vertical, 3)
             }
-            .overlay(alignment: .top) { if showGrips { resizeHandle(id: block.id, start: block.start, end: block.end, edge: .top, tint: color) } }
-            .overlay(alignment: .bottom) { if showGrips { resizeHandle(id: block.id, start: block.start, end: block.end, edge: .bottom, tint: color) } }
+            .overlay(alignment: .top) { if showGrips { resizeHandle(id: block.id, start: block.start, end: block.end, edge: .top, tint: color, cardHeight: h, onTap: { reviewing = block }) } }
+            .overlay(alignment: .bottom) { if showGrips { resizeHandle(id: block.id, start: block.start, end: block.end, edge: .bottom, tint: color, cardHeight: h, onTap: { reviewing = block }) } }
             .frame(width: frame.w, height: h, alignment: .topLeading)
             .position(x: frame.x + frame.w / 2, y: yOffset(for: start) + h / 2)
             .onTapGesture { reviewing = block }
@@ -425,18 +439,39 @@ struct DayTimelineView: View {
         let frame = columnFrame(place, containerWidth)
         let blockH = height(from: block.start, to: block.end)
         let px = min(max(Self.leftGutter, frame.x), max(Self.leftGutter, containerWidth - Self.panelWidth - 10))
-        let py = yOffset(for: block.start) + blockH + 6
+        let py = overlayY(blockTop: yOffset(for: block.start), blockH: blockH,
+                          overlayH: max(reviewPanelHeight, 190))
 
         return ZStack(alignment: .topLeading) {
             Rectangle().fill(.black.opacity(0.2))
                 .frame(width: containerWidth, height: Self.hourHeight * 24)
                 .contentShape(Rectangle())
                 .onTapGesture { reviewing = nil }
+            // Placed with padding, not .offset — offset is visual-only, so the
+            // scroll anchor (.id) would stay at the content's top-left and
+            // scrollTo would jump to the start of the day.
             GhostReviewPanel(block: block, onDone: { reviewing = nil })
                 .frame(width: Self.panelWidth)
-                .offset(x: px, y: py)
+                .background(GeometryReader { g in
+                    Color.clear
+                        .onAppear { reviewPanelHeight = g.size.height }
+                        .onChange(of: g.size.height) { reviewPanelHeight = $0 }
+                })
+                .id("review-panel")
+                .padding(.leading, px)
+                .padding(.top, py)
         }
         .frame(width: containerWidth, height: Self.hourHeight * 24, alignment: .topLeading)
+    }
+
+    /// Below the block when it fits, above it otherwise — a panel for a block
+    /// near the end of the day used to open past the content bottom, half
+    /// hidden. Clamped to the day content as a last resort.
+    private func overlayY(blockTop: CGFloat, blockH: CGFloat, overlayH: CGFloat) -> CGFloat {
+        let contentH = Self.hourHeight * 24
+        let below = blockTop + blockH + 6
+        if below + overlayH <= contentH { return below }
+        return max(0, min(blockTop - overlayH - 6, contentH - overlayH))
     }
 
     /// A non-interactive hovercard with the full evidence, shown while hovering
@@ -447,7 +482,8 @@ struct DayTimelineView: View {
         let blockH = height(from: block.start, to: block.end)
         let cardW: CGFloat = 260
         let px = min(max(Self.leftGutter, frame.x), max(Self.leftGutter, containerWidth - cardW - 10))
-        let py = yOffset(for: block.start) + blockH + 4
+        let py = overlayY(blockTop: yOffset(for: block.start), blockH: blockH,
+                          overlayH: max(hovercardHeight, 60))
 
         return ZStack(alignment: .topLeading) {
             VStack(alignment: .leading, spacing: 3) {
@@ -462,6 +498,11 @@ struct DayTimelineView: View {
             .background(RoundedRectangle(cornerRadius: 8).fill(Color(nsColor: .windowBackgroundColor)))
             .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(.quaternary, lineWidth: 1))
             .shadow(color: .black.opacity(0.25), radius: 8, y: 3)
+            .background(GeometryReader { g in
+                Color.clear
+                    .onAppear { hovercardHeight = g.size.height }
+                    .onChange(of: g.size.height) { hovercardHeight = $0 }
+            })
             .offset(x: px, y: py)
         }
         .frame(width: containerWidth, height: Self.hourHeight * 24, alignment: .topLeading)
@@ -472,10 +513,18 @@ struct DayTimelineView: View {
 
     private enum ResizeEdge { case top, bottom }
 
-    private func resizeHandle(id: UUID, start: Date, end: Date, edge: ResizeEdge, tint: Color = .white) -> some View {
+    /// Grip zones shrink to a third of the card on short blocks so a 15-min
+    /// block keeps a clickable middle; they'd otherwise cover it entirely.
+    private static func gripZoneHeight(cardHeight: CGFloat) -> CGFloat {
+        min(handleHeight, max(4, cardHeight / 3))
+    }
+
+    private func resizeHandle(id: UUID, start: Date, end: Date, edge: ResizeEdge,
+                              tint: Color = .white, cardHeight: CGFloat,
+                              onTap: @escaping () -> Void) -> some View {
         Rectangle()
             .fill(Color.white.opacity(0.001))
-            .frame(height: Self.handleHeight)
+            .frame(height: Self.gripZoneHeight(cardHeight: cardHeight))
             // Outline + shadow so the capsule reads on any project colour —
             // plain white was invisible on the bright ones.
             .overlay(
@@ -491,7 +540,19 @@ struct DayTimelineView: View {
                         isResizing = true
                         updateDrag(id: id, start: start, end: end, edge: edge, translationY: value.translation.height)
                     }
-                    .onEnded { _ in commitDrag(); isResizing = false }
+                    .onEnded { value in
+                        isResizing = false
+                        // A click that never moved is the card tap, not a
+                        // resize — committing it would snap-shift an edge
+                        // that wasn't on the 5-minute grid.
+                        if abs(value.translation.height) < 4 && abs(value.translation.width) < 4 {
+                            dragPreview = nil
+                            dragEdge = nil
+                            onTap()
+                        } else {
+                            commitDrag()
+                        }
+                    }
             )
     }
 

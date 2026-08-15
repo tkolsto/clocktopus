@@ -7,76 +7,27 @@ struct WeekView: View {
     @State private var weekAnchor = Date()
     @State private var exportMessage: String?
 
-    private static let cellWidth: CGFloat = 54
     private var increment: Double { state.team?.roundingIncrementHours ?? 0.25 }
     private var week: DateInterval { state.workday.weekInterval(for: weekAnchor) }
     private var todayMidnight: Date { state.workday.logicalDayMidnight(for: Date()) }
 
-    /// Everything the week view needs, computed once per render. Avoids the
-    /// per-cell DB queries + re-rounding that made switching weeks slow.
-    private struct WeekData {
-        var days: [Date] = []
-        var visibleProjects: [Project] = []
-        var rounded: [String: [Date: Double]] = [:]   // projectId -> day -> rounded hours
-        var exact: [String: [Date: Double]] = [:]      // projectId -> day -> exact hours
-        var rowTotal: [String: Double] = [:]
-        var dayTotal: [Date: Double] = [:]
-        var weekTotal: Double = 0
-        var maxCell: Double = 0
-        var dayExported: [Date: Bool] = [:]
-        var totalsSorted: [(project: Project, hours: Double)] = []
-    }
-
-    private func makeWeekData() -> WeekData {
-        var data = WeekData()
+    /// Everything the week view needs, computed from one store snapshot per
+    /// render. The Core report keeps billable and personal rounding separate.
+    private func makeReport() -> WeekReport {
         let cal = state.workday.calendar
         let weekStartMidnight = state.workday.logicalDayMidnight(for: week.start)
-        data.days = (0..<7).compactMap { cal.date(byAdding: .day, value: $0, to: weekStartMidnight) }
-
-        let entries = (try? state.store.entries(in: week)) ?? []   // ONE query per render
-
-        var dayEntries: [Date: [TimeEntry]] = [:]
-        for e in entries where e.end != nil {
-            let day = state.workday.logicalDayMidnight(for: e.start)
-            dayEntries[day, default: []].append(e)
-            guard state.project(e.projectId)?.isPrivate != true else { continue }  // private excluded
-            data.exact[e.projectId, default: [:]][day, default: 0] += e.duration(asOf: e.end!) / 3600
+        let days = (0..<7).compactMap {
+            cal.date(byAdding: .day, value: $0, to: weekStartMidnight)
         }
-
-        // Round once per day (allocate across that day's projects), not per cell.
-        for day in data.days {
-            var dayExact: [String: Double] = [:]
-            for (pid, dh) in data.exact { if let h = dh[day] { dayExact[pid] = h } }
-            for (pid, h) in Rounding.allocate(exactHours: dayExact, incrementHours: increment) where h > 0 {
-                data.rounded[pid, default: [:]][day] = h
-            }
-        }
-
-        data.visibleProjects = state.projects.filter { !(data.exact[$0.id]?.isEmpty ?? true) }
-
-        for (pid, dh) in data.rounded {
-            var total = 0.0
-            for (_, h) in dh { total += h; data.maxCell = max(data.maxCell, h) }
-            data.rowTotal[pid] = total
-        }
-        for day in data.days {
-            data.dayTotal[day] = data.rounded.values.reduce(0.0) { $0 + ($1[day] ?? 0) }
-        }
-        data.weekTotal = data.rowTotal.values.reduce(0, +)
-        for day in data.days {
-            let closed = dayEntries[day] ?? []
-            data.dayExported[day] = !closed.isEmpty && closed.allSatisfy { $0.exportedAt != nil }
-        }
-        data.totalsSorted = data.visibleProjects
-            .map { (project: $0, hours: data.rowTotal[$0.id] ?? 0) }
-            .filter { $0.hours > 0 }
-            .sorted { $0.hours > $1.hours }
-        return data
+        return WeekReport(entries: (try? state.store.entries(in: week)) ?? [],
+                          projects: state.projects, days: days,
+                          workday: state.workday, incrementHours: increment,
+                          asOf: Date())
     }
 
     var body: some View {
-        let data = makeWeekData()
-        return VStack(alignment: .leading, spacing: 8) {
+        let report = makeReport()
+        return VStack(alignment: .leading, spacing: 10) {
             HStack {
                 Button("◀") { shift(-1) }
                 Text(weekLabel).font(.headline)
@@ -84,74 +35,134 @@ struct WeekView: View {
                 Button("This week") { weekAnchor = Date() }
                 Spacer()
                 Button("Export CSV…") { export() }
+                    .help("Export billable time to CSV — personal projects are excluded")
             }
-            HStack(alignment: .top, spacing: 16) {
-                gridTable(data)
-                weekSummary(data)
+            ScrollView(.vertical) {
+                VStack(alignment: .leading, spacing: 12) {
+                    gridTable(report)
+                    weekSummary(report)
+                }
             }
             if let message = exportMessage {
                 Text(message).font(.caption).foregroundStyle(.secondary)
             }
-            Spacer()
         }
         .padding(12)
     }
 
     // MARK: - Grid
 
-    private func gridTable(_ data: WeekData) -> some View {
-        Grid(alignment: .trailing, horizontalSpacing: 4, verticalSpacing: 2) {
+    private func gridTable(_ report: WeekReport) -> some View {
+        GeometryReader { proxy in
+            ScrollView(.horizontal) {
+                gridContent(report, width: max(760, proxy.size.width))
+            }
+        }
+        .frame(height: gridHeight(report))
+    }
+
+    private func gridContent(_ report: WeekReport, width: CGFloat) -> some View {
+        let innerWidth = width - 28
+        let projectWidth = min(240, max(150, innerWidth * 0.22))
+        let totalWidth: CGFloat = 72
+        let dayWidth = max(62, (innerWidth - projectWidth - totalWidth - 32) / 7)
+        return Grid(alignment: .trailing, horizontalSpacing: 4, verticalSpacing: 3) {
             GridRow {
                 Text("Project").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                    .frame(width: projectWidth, alignment: .leading)
                     .gridColumnAlignment(.leading)
-                ForEach(data.days, id: \.self) { day in headerCell(day) }
+                ForEach(report.days, id: \.self) { day in
+                    headerCell(day, width: dayWidth)
+                }
                 Text("Total").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-                    .frame(width: Self.cellWidth)
+                    .frame(width: totalWidth, alignment: .trailing)
             }
-            Divider().gridCellColumns(data.days.count + 2)
+            Divider().gridCellColumns(report.days.count + 2)
 
-            ForEach(data.visibleProjects) { project in
+            if report.visibleProjects.isEmpty {
+                GridRow {
+                    Text("No time logged this week.")
+                        .font(.callout).foregroundStyle(.secondary)
+                        .frame(width: projectWidth, alignment: .leading)
+                    Color.clear.gridCellColumns(report.days.count + 1)
+                }
+            }
+
+            ForEach(report.visibleProjects) { project in
                 GridRow {
                     HStack(spacing: 7) {
                         Circle().fill(state.color(for: project.id)).frame(width: 9, height: 9)
                         Text(project.name).lineLimit(1)
-                    }
-                    .frame(minWidth: 120, alignment: .leading)
-                    ForEach(data.days, id: \.self) { day in dayCell(project, day, data) }
-                    Text(fmt(data.rowTotal[project.id] ?? 0))
-                        .font(.callout.monospacedDigit().weight(.semibold))
-                        .frame(width: Self.cellWidth)
-                }
-            }
-
-            Divider().gridCellColumns(data.days.count + 2)
-
-            GridRow {
-                Text("Day total").font(.callout.weight(.semibold)).foregroundStyle(.secondary)
-                    .gridColumnAlignment(.leading)
-                ForEach(data.days, id: \.self) { day in
-                    HStack(spacing: 2) {
-                        if data.dayExported[day] == true {
-                            Image(systemName: "checkmark.circle.fill")
-                                .font(.system(size: 9)).foregroundStyle(.green.opacity(0.8))
-                                .help("All entries this day have been exported")
+                        if project.isPrivate {
+                            Image(systemName: "lock.fill")
+                                .font(.caption2).foregroundStyle(.secondary)
                         }
-                        Text(fmt(data.dayTotal[day] ?? 0))
-                            .font(.callout.monospacedDigit().weight(.semibold))
                     }
-                    .frame(width: Self.cellWidth, alignment: .trailing)
+                    .foregroundStyle(project.isPrivate ? .secondary : .primary)
+                    .frame(width: projectWidth, alignment: .leading)
+                    .help(project.isPrivate ? "Personal — tracked here but not exported" : project.name)
+                    ForEach(report.days, id: \.self) { day in
+                        dayCell(project, day, report, width: dayWidth)
+                    }
+                    Text(fmt(report.rowTotal[project.id] ?? 0))
+                        .font(.callout.monospacedDigit().weight(.semibold))
+                        .foregroundStyle(project.isPrivate ? .secondary : .primary)
+                        .frame(width: totalWidth, alignment: .trailing)
                 }
-                Text(fmt(data.weekTotal)).font(.callout.monospacedDigit().weight(.bold))
-                    .frame(width: Self.cellWidth)
             }
+
+            Divider().gridCellColumns(report.days.count + 2)
+            totalsRow("Billable", dayTotals: report.billableDayTotal,
+                      weekTotal: report.billableTotal, report: report,
+                      projectWidth: projectWidth, dayWidth: dayWidth,
+                      totalWidth: totalWidth, showExportStatus: true)
+            if report.personalTotal > 0 {
+                totalsRow("Personal", dayTotals: report.personalDayTotal,
+                          weekTotal: report.personalTotal, report: report,
+                          projectWidth: projectWidth, dayWidth: dayWidth,
+                          totalWidth: totalWidth, subdued: true)
+            }
+            totalsRow("Total tracked", dayTotals: report.trackedDayTotal,
+                      weekTotal: report.trackedTotal, report: report,
+                      projectWidth: projectWidth, dayWidth: dayWidth,
+                      totalWidth: totalWidth, bold: true)
         }
         .padding(14)
+        .frame(width: width, alignment: .leading)
         .background(RoundedRectangle(cornerRadius: 12).fill(Color(nsColor: .controlBackgroundColor)))
         .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(.quaternary, lineWidth: 1))
-        .fixedSize()
     }
 
-    private func headerCell(_ day: Date) -> some View {
+    private func totalsRow(_ label: String, dayTotals: [Date: Double], weekTotal: Double,
+                           report: WeekReport, projectWidth: CGFloat, dayWidth: CGFloat,
+                           totalWidth: CGFloat, showExportStatus: Bool = false,
+                           subdued: Bool = false, bold: Bool = false) -> some View {
+        GridRow {
+            Text(label)
+                .font(.callout.weight(bold ? .bold : .semibold))
+                .foregroundStyle(subdued ? .tertiary : .secondary)
+                .frame(width: projectWidth, alignment: .leading)
+            ForEach(report.days, id: \.self) { day in
+                HStack(spacing: 2) {
+                    if showExportStatus, report.dayExported[day] == true {
+                        Image(systemName: "checkmark.circle.fill")
+                            .font(.system(size: 9)).foregroundStyle(.green.opacity(0.8))
+                            .help("All billable entries this day have been exported")
+                    }
+                    Text(fmt(dayTotals[day] ?? 0))
+                        .font(.callout.monospacedDigit().weight(bold ? .bold : .semibold))
+                }
+                .foregroundStyle(subdued ? .secondary : .primary)
+                .frame(width: dayWidth, alignment: .trailing)
+            }
+            Text(fmt(weekTotal))
+                .font(.callout.monospacedDigit().weight(bold ? .bold : .semibold))
+                .foregroundStyle(subdued ? .secondary : .primary)
+                .frame(width: totalWidth, alignment: .trailing)
+        }
+    }
+
+    private func headerCell(_ day: Date, width: CGFloat) -> some View {
         let isToday = state.workday.calendar.isDate(day, inSameDayAs: todayMidnight)
         return VStack(spacing: 1) {
             Text(day.formatted(.dateTime.weekday(.abbreviated))).font(.caption2)
@@ -159,56 +170,102 @@ struct WeekView: View {
             Text(day.formatted(.dateTime.day())).font(.caption.monospacedDigit().weight(isToday ? .bold : .regular))
                 .foregroundStyle(isToday ? Color.accentColor : .primary)
         }
-        .frame(width: Self.cellWidth)
+        .frame(width: width)
     }
 
-    private func dayCell(_ project: Project, _ day: Date, _ data: WeekData) -> some View {
-        let hours = data.rounded[project.id]?[day] ?? 0
-        let intensity = data.maxCell > 0 ? min(0.42, hours / data.maxCell * 0.42) : 0
+    private func dayCell(_ project: Project, _ day: Date, _ report: WeekReport,
+                         width: CGFloat) -> some View {
+        let hours = report.rounded[project.id]?[day] ?? 0
+        let cap = project.isPrivate ? 0.26 : 0.42
+        let intensity = report.maxCell > 0 ? min(cap, hours / report.maxCell * cap) : 0
+        let exact = report.exact[project.id]?[day] ?? 0
         return Text(hours > 0 ? fmt(hours) : "")
             .font(.callout.monospacedDigit())
-            .frame(width: Self.cellWidth, height: 26)
+            .foregroundStyle(project.isPrivate ? .secondary : .primary)
+            .frame(width: width, height: 28)
             .background(RoundedRectangle(cornerRadius: 5).fill(state.color(for: project.id).opacity(intensity)))
-            .help(hours > 0 ? String(format: "exact %.2fh", data.exact[project.id]?[day] ?? 0) : "")
+            .help(hours > 0
+                  ? String(format: project.isPrivate ? "Personal — exact %.2fh, not exported" : "Exact %.2fh", exact)
+                  : "")
     }
 
     // MARK: - Summary
 
-    private func weekSummary(_ data: WeekData) -> some View {
-        let totals = data.totalsSorted
+    private func weekSummary(_ report: WeekReport) -> some View {
+        let totals = report.projectTotals
         let maxT = totals.map(\.hours).max() ?? 1
         return VStack(alignment: .leading, spacing: 11) {
-            HStack(alignment: .firstTextBaseline) {
-                Text("This week").font(.subheadline.weight(.semibold)).foregroundStyle(.secondary)
+            HStack(spacing: 28) {
+                summaryMetric("Billable", hours: report.billableTotal)
+                summaryMetric("Total tracked", hours: report.trackedTotal)
+                if report.personalTotal > 0 {
+                    summaryMetric("Personal", hours: report.personalTotal, subdued: true)
+                }
                 Spacer()
-                Text(fmt(data.weekTotal)).font(.title2.weight(.bold).monospacedDigit())
-                    + Text(" h").font(.callout.weight(.medium)).foregroundColor(.secondary)
             }
             Divider()
             if totals.isEmpty {
                 Text("No time logged this week.").font(.callout).foregroundStyle(.secondary)
             }
+            let billable = totals.filter { !$0.project.isPrivate }
+            if !billable.isEmpty {
+                projectBars(billable, maxHours: maxT)
+            }
+            let personal = totals.filter(\.project.isPrivate)
+            if !personal.isEmpty {
+                Text("Personal")
+                    .font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                    .padding(.top, 2)
+                projectBars(personal, maxHours: maxT)
+            }
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 12).fill(Color(nsColor: .controlBackgroundColor)))
+        .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(.quaternary, lineWidth: 1))
+    }
+
+    private func summaryMetric(_ label: String, hours: Double, subdued: Bool = false) -> some View {
+        VStack(alignment: .leading, spacing: 1) {
+            Text(label).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+            HStack(alignment: .firstTextBaseline, spacing: 3) {
+                Text(fmt(hours)).font(.title2.weight(.bold).monospacedDigit())
+                Text("h").font(.callout.weight(.medium)).foregroundStyle(.secondary)
+            }
+            .foregroundStyle(subdued ? .secondary : .primary)
+        }
+    }
+
+    private func projectBars(_ totals: [WeekReport.ProjectTotal], maxHours: Double) -> some View {
+        LazyVGrid(columns: [GridItem(.adaptive(minimum: 240), spacing: 18)], spacing: 12) {
             ForEach(totals, id: \.project.id) { item in
-                VStack(alignment: .leading, spacing: 4) {
+                VStack(alignment: .leading, spacing: 5) {
                     HStack(spacing: 6) {
                         Circle().fill(state.color(for: item.project.id)).frame(width: 8, height: 8)
                         Text(item.project.name).font(.callout).lineLimit(1)
+                        if item.project.isPrivate {
+                            Image(systemName: "lock.fill")
+                                .font(.caption2).foregroundStyle(.secondary)
+                        }
                         Spacer()
                         Text(fmt(item.hours)).font(.callout.monospacedDigit().weight(.medium))
                             .foregroundStyle(.secondary)
                     }
-                    GeometryReader { g in
+                    GeometryReader { proxy in
                         Capsule().fill(state.color(for: item.project.id).gradient)
-                            .frame(width: max(4, g.size.width * CGFloat(item.hours / maxT)))
+                            .frame(width: max(4, proxy.size.width * CGFloat(item.hours / maxHours)))
+                            .opacity(item.project.isPrivate ? 0.68 : 1)
                     }
                     .frame(height: 6)
                 }
             }
         }
-        .padding(14)
-        .frame(width: 240, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 12).fill(Color(nsColor: .controlBackgroundColor)))
-        .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(.quaternary, lineWidth: 1))
+    }
+
+    private func gridHeight(_ report: WeekReport) -> CGFloat {
+        let footerRows = report.personalTotal > 0 ? 3 : 2
+        let projectRows = max(1, report.visibleProjects.count)
+        return CGFloat(76 + projectRows * 34 + footerRows * 30)
     }
 
     private func fmt(_ h: Double) -> String { String(format: "%.2f", h) }
@@ -231,8 +288,12 @@ struct WeekView: View {
     private func export() {
         guard let personal = state.personal else { return }
         // Single snapshot of closed entries — excludes any running entry (that
-        // time exports later, once closed), so the CSV always matches the grid.
-        let snapshot = ((try? state.store.entries(in: week)) ?? []).filter { $0.end != nil }
+        // time exports later, once closed). The grid shows the running entry's
+        // live time, so the CSV can be slightly behind the grid mid-timer.
+        let projectById = Dictionary(uniqueKeysWithValues: state.projects.map { ($0.id, $0) })
+        let snapshot = ((try? state.store.entries(in: week)) ?? []).filter {
+            $0.end != nil && projectById[$0.projectId]?.isPrivate == false
+        }
         let alreadyExported = snapshot.filter { $0.exportedAt != nil }
         if !alreadyExported.isEmpty {
             let alert = NSAlert()

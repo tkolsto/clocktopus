@@ -40,6 +40,7 @@ struct ClocktopusApp: App {
     /// Runs at launch (anchored to the menubar label's `.onAppear`) so
     /// detection begins immediately, without waiting for the popover to open.
     private func startup() {
+        guard Self.shouldStart(environment: ProcessInfo.processInfo.environment) else { return }
         guard !bootstrapped else { return }
         bootstrapped = true
         state.bootstrap()
@@ -59,6 +60,10 @@ struct ClocktopusApp: App {
         }
         engine = SignalEngine(state: state)
         engine?.start()
+    }
+
+    static func shouldStart(environment: [String: String]) -> Bool {
+        environment["XCTestConfigurationFilePath"] == nil
     }
 
     // The octopus is a template image: macOS forces it to the standard menubar

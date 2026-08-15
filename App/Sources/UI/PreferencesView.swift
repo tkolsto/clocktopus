@@ -78,7 +78,7 @@ struct PreferencesView: View {
                     Text("Processes whose working directory signals active work, e.g. claude, codex, gemini.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
-                Toggle("Include exact-hours column in export",
+                Toggle("Include exact hours as a comment in export",
                        isOn: Binding(get: { includeExact },
                                      set: { includeExact = $0
                                             state.setIncludeExactColumn($0) }))

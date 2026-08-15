@@ -319,6 +319,7 @@ public struct TimeKeeper {
         if obs.dirs.contains(where: { $0.kind == .aiTool }) { s.insert(.aiTool) }
         if obs.activeTabURL != nil { s.insert(.browser) }
         else if obs.frontmostAppName != nil { s.insert(.app) }
+        if Observation.browserProfile(fromWindowTitle: obs.windowTitle) != nil { s.insert(.profile) }
         return s
     }
 
@@ -348,6 +349,10 @@ public struct TimeKeeper {
             parts.append("browser \(host)")
         } else if let app = obs.frontmostAppName {
             parts.append(app)
+        }
+        // The profile display name is the user's own label, not browsing data.
+        if let profile = Observation.browserProfile(fromWindowTitle: obs.windowTitle) {
+            parts.append("profile \(profile)")
         }
         return parts.joined(separator: " · ")
     }
