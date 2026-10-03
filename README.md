@@ -16,7 +16,10 @@ At the end of the week, export a CSV for your billing system and go do
 literally anything else.
 
 <p align="center">
-  <img src="docs/assets/screenshots/day-timeline.png" alt="Day timeline with a detected ghost block" width="760">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/screenshots/day-timeline-dark.png">
+    <img src="docs/assets/screenshots/day-timeline-light.png" alt="Day timeline with detected ghost blocks" width="760">
+  </picture>
 </p>
 
 ## No cloud. Anywhere. At all.
@@ -69,7 +72,10 @@ evidence and which signals fired. Confirm it, resize it, reassign it, or
 dismiss it.
 
 <p align="center">
-  <img src="docs/assets/screenshots/popover.png" alt="Menubar popover" width="380">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/screenshots/popover-dark.png">
+    <img src="docs/assets/screenshots/popover-light.png" alt="Menubar popover with the week chart" width="300">
+  </picture>
 </p>
 
 ## Review & export
@@ -85,7 +91,10 @@ count toward Total tracked. They never count as billable time and are always
 excluded from CSV export. What happens on `Side quest` stays on `Side quest`.
 
 <p align="center">
-  <img src="docs/assets/screenshots/week-grid.png" alt="Week grid with per-project totals" width="760">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/screenshots/week-grid-dark.png">
+    <img src="docs/assets/screenshots/week-grid-light.png" alt="Week grid with per-project totals" width="760">
+  </picture>
 </p>
 
 The CSV export emits [xledger](https://xledger.com)'s PM10 "Time
