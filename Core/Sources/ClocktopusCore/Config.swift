@@ -32,6 +32,7 @@ public struct PersonalConfig: Equatable, Sendable {
     public var overrides: [ProjectOverride]
     public var includeExactColumn: Bool
     public var launchAtLogin: Bool
+    public var dailyTargetHours: Double
 }
 
 public struct TeamConfig: Equatable, Sendable {
@@ -107,7 +108,8 @@ public enum ConfigLoader {
             aiTools: table["ai_tools"].map(stringArray) ?? ["claude", "codex", "gemini"],
             overrides: overrides,
             includeExactColumn: table["include_exact_column"]?.bool ?? false,
-            launchAtLogin: table["launch_at_login"]?.bool ?? true
+            launchAtLogin: table["launch_at_login"]?.bool ?? true,
+            dailyTargetHours: number(table["daily_target_hours"]) ?? 7.5
         )
     }
 

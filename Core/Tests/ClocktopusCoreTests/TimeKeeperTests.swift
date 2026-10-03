@@ -365,8 +365,48 @@ final class TimeKeeperTests: XCTestCase {
         for effect in more {
             if case .provisionalOpened(let b) = effect {
                 XCTAssertNotEqual(b.id, resolvedId)
+                XCTAssertGreaterThanOrEqual(b.start, t0.addingTimeInterval(330))
             }
         }
+    }
+
+    func testClippedBlockCannotResumeAcrossLoggedTimeAfterReload() {
+        let original = ProvisionalBlock(guessedProjectId: "initech", start: t0,
+                                        end: t0.addingTimeInterval(300), confidence: 1, evidence: "terminal")
+        let logged = TimeEntry(projectId: "canopyops", start: t0.addingTimeInterval(180),
+                               end: t0.addingTimeInterval(360), source: .manual)
+        let clipped = Overlap.clipBlocks([original], around: DateInterval(start: logged.start, end: logged.end!))
+            .compactMap { action -> ProvisionalBlock? in
+                if case .save(let block) = action { return block }; return nil
+            }
+        let head = try! XCTUnwrap(clipped.first)
+        keeper.restore(openBlock: head, excluding: [logged], asOf: logged.end!)
+        XCTAssertNil(keeper.openBlock)
+        var effects: [TimeKeeperEffect] = []
+        for i in 0..<12 { effects += keeper.handle(obs(360 + Double(i) * 30, dir: "/src/initech")) }
+        let blocks = effects.compactMap { effect -> ProvisionalBlock? in
+            switch effect {
+            case .provisionalOpened(let b), .provisionalUpdated(let b): return b
+            default: return nil
+            }
+        }
+        XCTAssertFalse(blocks.isEmpty)
+        XCTAssertTrue(blocks.allSatisfy { $0.start >= logged.end! && $0.id != head.id })
+    }
+
+    func testClippedLiveBlockCannotBackfillOverLoggedRange() {
+        for i in 0..<12 { _ = keeper.handle(obs(Double(i) * 30, dir: "/src/initech")) }
+        let block = try! XCTUnwrap(keeper.openBlock)
+        let loggedEnd = t0.addingTimeInterval(400)
+        keeper.resolveBlock(id: block.id, through: loggedEnd)
+        var effects: [TimeKeeperEffect] = []
+        for i in 12..<22 { effects += keeper.handle(obs(Double(i) * 30, dir: "/src/initech")) }
+        let opened = effects.compactMap { effect -> ProvisionalBlock? in
+            if case .provisionalOpened(let b) = effect { return b }; return nil
+        }
+        XCTAssertEqual(opened.count, 1)
+        XCTAssertEqual(opened.first?.start, loggedEnd)
+        XCTAssertTrue(opened.allSatisfy { $0.end > $0.start })
     }
 
     func testProvisionalBlockEvidenceTracksLatestActivity() {
@@ -395,6 +435,36 @@ final class TimeKeeperTests: XCTestCase {
                       "evidence should track current activity, got: \(latest.evidence)")
         XCTAssertFalse(latest.evidence.contains("proton"),
                        "stale first-open evidence should be gone, got: \(latest.evidence)")
+    }
+
+    func testEvidenceIgnoresObservationsThatDidNotScoreTheLeader() {
+        // The scorer's decay keeps initech leading for a while after the user
+        // wanders off to an unrelated site. That unrelated observation must not
+        // become the block's evidence — it never matched anything.
+        let home = NSString(string: "~").expandingTildeInPath
+        var all: [TimeKeeperEffect] = []
+        for i in 0..<12 {
+            all += keeper.handle(Observation(
+                timestamp: t0.addingTimeInterval(Double(i) * 30),
+                dirs: [ObservedDir(path: home + "/src/initech", kind: .frontmostShell)],
+                frontmostAppName: "Ghostty"))
+        }
+        for i in 12..<16 {
+            all += keeper.handle(Observation(
+                timestamp: t0.addingTimeInterval(Double(i) * 30),
+                activeTabURL: "https://news.example.org/story", frontmostAppName: "Google Chrome"))
+        }
+        let blocks = all.compactMap { effect -> ProvisionalBlock? in
+            switch effect {
+            case .provisionalOpened(let b), .provisionalUpdated(let b): return b
+            default: return nil
+            }
+        }
+        let latest = try! XCTUnwrap(blocks.last)
+        XCTAssertEqual(latest.guessedProjectId, "initech")
+        XCTAssertTrue(latest.evidence.contains("initech"), "got: \(latest.evidence)")
+        XCTAssertFalse(latest.evidence.contains("news.example.org"), "got: \(latest.evidence)")
+        XCTAssertFalse(latest.signals.contains(.browser), "got: \(latest.signals)")
     }
 
     func testEvidenceUsesFriendlyAppNameAndDedupesBrowser() {
@@ -482,7 +552,7 @@ final class TimeKeeperTests: XCTestCase {
 
     func testEvidenceShowsForegroundAIToolNotBackground() {
         // Active pane in ~/src/ttt with a Claude session there; a parked Claude
-        // in burke should NOT be what evidence reports.
+        // in canopyops should NOT be what evidence reports.
         let home = NSString(string: "~").expandingTildeInPath
         let priv = Project(name: "Priv", xledgerProject: "9", xledgerActivity: "PRIV",
                            dirs: ["~/src/"])
@@ -491,7 +561,7 @@ final class TimeKeeperTests: XCTestCase {
         for i in 0..<12 {
             effects += k.handle(Observation(
                 timestamp: t0.addingTimeInterval(Double(i) * 30),
-                dirs: [ObservedDir(path: home + "/Documents/src/burke", kind: .aiTool),  // background, listed first
+                dirs: [ObservedDir(path: home + "/Documents/src/canopyops", kind: .aiTool),  // background, listed first
                        ObservedDir(path: home + "/src/ttt", kind: .tmuxActivePane),      // active pane
                        ObservedDir(path: home + "/src/ttt", kind: .aiTool)]))            // foreground AI
         }
@@ -502,7 +572,7 @@ final class TimeKeeperTests: XCTestCase {
             }
         }.last ?? ""
         XCTAssertTrue(ev.contains("AI tool in ~/src/ttt"), ev)
-        XCTAssertFalse(ev.contains("burke"), ev)
+        XCTAssertFalse(ev.contains("canopyops"), ev)
     }
 
     func testProvisionalBlockCapturesSignalKinds() {

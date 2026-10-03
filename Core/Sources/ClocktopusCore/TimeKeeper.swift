@@ -69,6 +69,8 @@ public struct TimeKeeper {
 
     var scorer: Scorer
     var openBlock: ProvisionalBlock?
+    /// Activity already resolved by review must never be suggested again.
+    var provisionalStartFloor: Date?
     var nudgeTimes: [Date] = []          // for the per-hour budget
     var nudgedBlockIds: Set<UUID> = []   // one nudge per block, ever
     /// A dismissed switch suggestion stays dismissed while that project keeps
@@ -123,8 +125,20 @@ public struct TimeKeeper {
     /// every restart. The block keeps its identity; it's recorded as
     /// already-nudged so a restart doesn't re-fire its clock-in nudge, and no
     /// effect is emitted. The caller decides recency (only adopt a block still
-    /// within its live window).
-    public mutating func restore(openBlock block: ProvisionalBlock) {
+    /// within its live window) and supplies logged entries in the continuation
+    /// span, so a clipped head cannot extend across logged time after reload.
+    public mutating func restore(openBlock block: ProvisionalBlock,
+                                 excluding entries: [TimeEntry] = [], asOf: Date? = nil) {
+        let continuationEnd = max(block.end, asOf ?? block.end)
+        let collisions = entries.filter {
+            $0.start < continuationEnd && ($0.end ?? .distantFuture) > block.start
+        }
+        if !collisions.isEmpty {
+            let end = collisions.map { $0.end ?? continuationEnd }.max()!
+            provisionalStartFloor = max(provisionalStartFloor ?? .distantPast, end)
+            openBlock = nil
+            return
+        }
         openBlock = block
         nudgedBlockIds.insert(block.id)
     }
@@ -250,14 +264,21 @@ public struct TimeKeeper {
             // ---- Not clocked in: provisional block + one nudge ----
             if sustainedMinutes >= settings.clockInLeadMinutes || !unambiguous {
                 let guess = unambiguous ? leader.projectId : nil
-                let start = leader.leadingSince ?? now
+                let start = max(leader.leadingSince ?? now, provisionalStartFloor ?? .distantPast)
+                guard now > start else { return effects }
                 if var block = openBlock {
                     block.end = now
                     block.guessedProjectId = guess
                     // Refresh evidence + signals so an extending block reflects
-                    // current activity, not the snapshot from when it opened.
-                    block.evidence = evidenceSummary(obs, leader: leader)
-                    block.signals = signalKinds(obs)
+                    // current activity, not the snapshot from when it opened —
+                    // but only from an observation that actually matched the
+                    // leader. The scorer's decay keeps a project leading for a
+                    // while after you wander off to an unrelated site, and
+                    // that site is not evidence for the project.
+                    if scorer.lastScores[leader.projectId] != nil {
+                        block.evidence = evidenceSummary(obs, leader: leader)
+                        block.signals = signalKinds(obs)
+                    }
                     openBlock = block
                     effects.append(.provisionalUpdated(block))
                 } else {
@@ -283,9 +304,12 @@ public struct TimeKeeper {
     /// review UI). If it is the keeper's current open block, detach it so a
     /// later observation opens a fresh block instead of re-persisting this one
     /// as pending. The id stays in nudgedBlockIds so the resolved block is
-    /// never re-nudged.
-    public mutating func resolveBlock(id: UUID) {
-        if openBlock?.id == id {
+    /// never re-nudged. New suggestions cannot backfill into its resolved
+    /// span, or into a logged range supplied by the clipping caller.
+    public mutating func resolveBlock(id: UUID, through end: Date? = nil) {
+        if let block = openBlock, block.id == id {
+            provisionalStartFloor = max(provisionalStartFloor ?? .distantPast,
+                                        max(block.end, end ?? block.end))
             nudgedBlockIds.insert(id)
             openBlock = nil
         }

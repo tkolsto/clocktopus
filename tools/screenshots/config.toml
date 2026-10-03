@@ -1,0 +1,2 @@
+employee = "Alex"
+team_config_path = "~/.config/clocktopus/demo/team.toml"

@@ -69,7 +69,9 @@ appears.
 
 And it stays a *suggestion* — a dashed ghost card on the timeline showing its
 evidence and which signals fired. Confirm it, resize it, reassign it, or
-dismiss it.
+dismiss it. Came back to a messy day? Merge a run of same-project slivers
+into one ghost, clear the whole day, or just draw the entry you know you
+worked over the top — ghosts underneath it get out of the way.
 
 <p align="center">
   <picture>
@@ -105,13 +107,16 @@ at whatever your accounting department worships.
 
 ## Install
 
-Build from source (sorry — notarized releases need an Apple Developer ID, and
-this octopus is young):
+Download the universal app for Apple Silicon and Intel from the
+[latest release](https://github.com/tkolsto/clocktopus/releases/latest).
+Extract the ZIP and move Clocktopus to Applications.
+
+To build from source:
 
 ```sh
 brew install xcodegen
 git clone <this repo> && cd clocktopus
-cd Core && swift test                  # 90+ tests on the core logic
+cd Core && swift test                  # 140+ tests on the core logic
 cd ../App && xcodegen generate
 xcodebuild -project Clocktopus.xcodeproj -scheme Clocktopus -configuration Release -derivedDataPath build/dd build
 open build/dd/Build/Products/Release/Clocktopus.app
@@ -148,7 +153,8 @@ browser_profiles = ["Initech"]         # Chrome/Edge/Brave profile of the frontm
 name = "Meetings"
 xledger_project = "T200000"
 xledger_activity = "MEET"
-apps = ["zoom.us", "Slack"]            # frontmost app, by name or bundle id
+apps = ["zoom.us", "Google Meet"]      # frontmost app, by name or bundle id
+urls = ["meet.google.com", "teams.microsoft.com"]
 
 [[project]]
 name = "Side quest"
@@ -166,8 +172,9 @@ Everything is optional except the first one, and everything degrades
 gracefully:
 
 - **Notifications** — the "you're working on something unlogged" nudges.
-- **Accessibility** (optional) — window-title keyword matching. Terminal cwds,
-  tmux, AI-tool and idle detection all work without it.
+- **Accessibility** (optional) — window titles, which power `keywords` and
+  `browser_profiles`. Terminal cwds, tmux, AI-tool and idle detection all
+  work without it.
 - **Automation** (optional, off by default) — browser-tab matching. macOS
   prompts per browser; only the domain is stored.
 

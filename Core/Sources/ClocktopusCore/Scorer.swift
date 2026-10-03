@@ -45,6 +45,9 @@ public struct Scorer {
 
     let projects: [Project]
     private(set) var history: [(timestamp: Date, scores: [String: Double])] = []
+    /// Instantaneous scores of the most recently ingested observation — which
+    /// projects *that* observation matched, before any decay from history.
+    public private(set) var lastScores: [String: Double] = [:]
 
     public init(projects: [Project]) {
         self.projects = projects
@@ -118,6 +121,7 @@ public struct Scorer {
                                         activeTabURL: obs.activeTabURL,
                                         frontmostAppName: obs.frontmostAppName,
                                         projects: projects)
+        lastScores = scores
         history.append((obs.timestamp, scores))
         history.removeAll { obs.timestamp.timeIntervalSince($0.timestamp) > Self.windowMax }
     }

@@ -96,9 +96,8 @@ struct EntryEditorSheet: View {
             running.start = start
             running.end = nil
             running.note = note.isEmpty ? nil : note
-            var probe = running
-            probe.end = Date()          // clip finished neighbors up to "now"
-            clipNeighbors(around: probe)
+            // Clip finished neighbours (and covered ghosts) up to "now".
+            state.clearRange(DateInterval(start: start, end: Date()), excludingEntry: running.id)
             state.updateRunningEntry(running)
             dismiss()
             return
@@ -121,7 +120,10 @@ struct EntryEditorSheet: View {
             state.stopRunningEntry(at: end)
         }
 
-        clipNeighbors(around: saved)
+        // Whatever sat in this range gives way: neighbours shrink or split,
+        // ghosts it covers are answered by the entry itself.
+        state.clearRange(DateInterval(start: saved.start, end: saved.end ?? saved.start),
+                         excludingEntry: saved.id)
         try? state.store.save(saved)
         state.refreshDerived()
         dismiss()
@@ -146,38 +148,4 @@ struct EntryEditorSheet: View {
         return false
     }
 
-    /// Enforce the no-overlap invariant: shrink neighbors that intersect the
-    /// saved range; delete neighbors fully covered by it.
-    ///
-    /// `saved.end` is always non-nil here: the Save button is disabled unless
-    /// `end > start` (see the `.disabled` above), and both start/end are set
-    /// just above from the always-non-optional `@State` fields. The guard
-    /// below is defensive only — if it ever failed, skip clipping rather than
-    /// crash.
-    private func clipNeighbors(around saved: TimeEntry) {
-        guard let savedEnd = saved.end else { return }
-        let dayPad: TimeInterval = 86_400
-        let range = DateInterval(start: saved.start.addingTimeInterval(-dayPad),
-                                 end: savedEnd.addingTimeInterval(dayPad))
-        for var other in (try? state.store.entries(in: range)) ?? [] where other.id != saved.id {
-            let otherEnd = other.end ?? Date()
-            guard other.start < savedEnd, otherEnd > saved.start else { continue }
-            if other.start >= saved.start, otherEnd <= savedEnd {
-                try? state.store.delete(entryId: other.id)          // fully covered
-            } else if other.start < saved.start, otherEnd > savedEnd {
-                let tail = TimeEntry(projectId: other.projectId, start: savedEnd,
-                                     end: otherEnd, source: other.source, note: other.note,
-                                     exportedAt: other.exportedAt)
-                other.end = saved.start                              // split in two
-                try? state.store.save(other)
-                try? state.store.save(tail)
-            } else if other.start < saved.start {
-                other.end = saved.start                              // clip tail
-                try? state.store.save(other)
-            } else {
-                other.start = savedEnd                               // clip head
-                try? state.store.save(other)
-            }
-        }
-    }
 }

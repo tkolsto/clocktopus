@@ -9,6 +9,12 @@ final class AppState: ObservableObject {
     @Published var pendingBlocks: [ProvisionalBlock] = []
     @Published var todayTotal: TimeInterval = 0
     @Published var weekTotal: TimeInterval = 0
+    /// Current-week snapshot behind the popover chart, rebuilt in
+    /// `refreshDerived` — never a computed property (see WeekView lesson).
+    @Published var popoverWeekReport: WeekReport?
+    /// One-shot deep link: a time inside the day the review window should
+    /// jump to. Consumed (reset to nil) by ReviewWindow when adopted.
+    @Published var reviewFocusDay: Date?
     @Published var configError: String?
     @Published var recoveryNotice: String?   // dangling-entry recovery, user-dismissable
     /// Sustained different-project leader while a timer runs — shown in the
@@ -59,6 +65,9 @@ final class AppState: ObservableObject {
     var effectiveIdleAutoStopMinutes: Int {
         settings.idleAutoStopMinutes ?? Self.defaultIdleAutoStopMinutes
     }
+    var effectiveDailyTargetHours: Double {
+        settings.dailyTargetHours ?? personal?.dailyTargetHours ?? 7.5
+    }
     /// Work-day calendar for grouping time into days that start at the
     /// configured hour rather than midnight.
     var workday: WorkdayCalendar {
@@ -78,10 +87,16 @@ final class AppState: ObservableObject {
         return s
     }
 
-    static let personalConfigURL = URL(fileURLWithPath:
-        NSString(string: "~/.config/clocktopus/config.toml").expandingTildeInPath)
-    static let dbURL = URL(fileURLWithPath: NSString(
-        string: "~/Library/Application Support/Clocktopus/clocktopus.sqlite").expandingTildeInPath)
+    // Launch arguments `-clocktopus-config PATH` / `-clocktopus-db PATH`
+    // (macOS parses `-key value` into the defaults argument domain) point a
+    // second instance at demo files — for screenshots and for trying a config
+    // without touching your real data. Unset in normal use.
+    static let personalConfigURL = URL(fileURLWithPath: NSString(string:
+        UserDefaults.standard.string(forKey: "clocktopus-config")
+            ?? "~/.config/clocktopus/config.toml").expandingTildeInPath)
+    static let dbURL = URL(fileURLWithPath: NSString(string:
+        UserDefaults.standard.string(forKey: "clocktopus-db")
+            ?? "~/Library/Application Support/Clocktopus/clocktopus.sqlite").expandingTildeInPath)
 
     func bootstrap() {
         do {
@@ -182,7 +197,11 @@ final class AppState: ObservableObject {
                 // activity into a new block. Only adopt it while it's still
                 // within its live window; older blocks stay finished and the
                 // next activity episode opens a fresh one.
-                keeper.restore(openBlock: recent)
+                let now = Date()
+                let continuation = DateInterval(start: recent.start, end: max(now, recent.end))
+                if let entries = try? store.entries(in: continuation) {
+                    keeper.restore(openBlock: recent, excluding: entries, asOf: now)
+                }
             }
             self.keeper = keeper
             // The rebuilt keeper starts with no switch/idle episode state —
@@ -294,14 +313,23 @@ final class AppState: ObservableObject {
         keeper?.updateSettings(makeKeeperSettings())
     }
 
+    func setDailyTargetHours(_ hours: Double) {
+        settings.dailyTargetHours = hours
+        refreshDerived()   // republish so an open popover redraws its guide line
+    }
+
     /// Persist an entry resized by dragging its edge in the timeline. The
-    /// timeline clamps the drag to neighbours, so this can't create an overlap.
+    /// timeline clamps the drag to neighbouring entries, so this can't create
+    /// an entry overlap.
     func saveResizedEntry(_ entry: TimeEntry) {
         guard store != nil else { return }
         try? store.save(entry)
         // The keeper carries its own copy of the running entry; without this,
         // the next clock-out would re-save the stale pre-resize start.
         if entry.end == nil { keeper?.restore(runningEntry: entry) }
+        // Resizing is clamped at other entries but may sweep over ghosts.
+        clearRange(DateInterval(start: entry.start, end: entry.end ?? Date()),
+                   excludingEntry: entry.id)
         refreshDerived()
     }
 
@@ -329,22 +357,21 @@ final class AppState: ObservableObject {
             && Date().timeIntervalSince(block.end) < makeKeeperSettings().blockStalenessSeconds
             && block.id == pendingBlocks.max(by: { $0.end < $1.end })?.id
         if isLiveOngoing {
+            clearRange(DateInterval(start: block.start, end: Date()), excludingBlock: block.id)
             clockIn(projectId: projectId, backfillFrom: block.start)  // starts the timer + refreshes
             return
         }
 
         let entry = TimeEntry(projectId: projectId, start: block.start, end: block.end,
                               source: .backfill)
+        clearRange(DateInterval(start: block.start, end: block.end), excludingBlock: block.id)
         try? store.save(entry)
         refreshDerived()
     }
 
     func dismissBlock(_ block: ProvisionalBlock) {
         guard store != nil else { return }
-        var dismissed = block
-        dismissed.status = .dismissed
-        try? store.save(dismissed)
-        keeper?.resolveBlock(id: block.id)
+        markDismissed(block)
         refreshDerived()
     }
 
@@ -353,12 +380,86 @@ final class AppState: ObservableObject {
     func dismissBlocks(endedBefore cutoff: Date?) {
         guard store != nil else { return }
         for block in pendingBlocks where cutoff.map({ block.end < $0 }) ?? true {
-            var dismissed = block
-            dismissed.status = .dismissed
-            try? store.save(dismissed)
-            keeper?.resolveBlock(id: block.id)
+            markDismissed(block)
         }
         refreshDerived()
+    }
+
+    /// Unverified blocks touching a work-day (what the day timeline shows).
+    func pendingBlocks(in interval: DateInterval) -> [ProvisionalBlock] {
+        pendingBlocks.filter {
+            $0.end > $0.start && interval.intersects(DateInterval(start: $0.start, end: $0.end))
+        }
+    }
+
+    /// Clear a whole day's suggestions so it can be drawn in from memory.
+    func dismissBlocks(in interval: DateInterval) {
+        guard store != nil else { return }
+        pendingBlocks(in: interval).forEach { markDismissed($0) }
+        refreshDerived()
+    }
+
+    /// Same-project ghosts closer than this collapse into one on "Merge".
+    static let mergeGapSeconds: TimeInterval = 30 * 60
+
+    /// Shared by the menu count and merge action, with logged time as barriers.
+    func mergeableBlockRuns(in interval: DateInterval) -> [[ProvisionalBlock]] {
+        let blocks = pendingBlocks(in: interval)
+        guard let start = blocks.map(\.start).min(), let end = blocks.map(\.end).max(), end > start,
+              let entries = try? store.entries(in: DateInterval(start: start, end: end)) else { return [] }
+        let occupied = entries.map { DateInterval(start: $0.start, end: $0.end ?? .distantFuture) }
+        return BlockMerging.runs(blocks, maxGap: Self.mergeGapSeconds, excluding: occupied)
+            .filter { $0.count > 1 }
+    }
+
+    /// Collapse nearby ghosts, dismissing the originals after saving each run.
+    func mergeBlocks(in interval: DateInterval) {
+        guard store != nil else { return }
+        let runs = mergeableBlockRuns(in: interval)
+        for run in runs {
+            try? store.save(BlockMerging.merged(run))
+            run.forEach { markDismissed($0) }
+        }
+        refreshDerived()
+    }
+
+    /// Persist a block as dismissed and detach it from the keeper if it was
+    /// the live open block. Callers refresh derived state afterwards.
+    private func markDismissed(_ block: ProvisionalBlock, through end: Date? = nil) {
+        var dismissed = block
+        dismissed.status = .dismissed
+        try? store.save(dismissed)
+        keeper?.resolveBlock(id: block.id, through: end)
+    }
+
+    /// Make room for a logged range (`Overlap`): finished entries that overlap
+    /// it shrink, split or go; ghost blocks it covers are dismissed, partially
+    /// covered ones clipped. Callers refresh derived state afterwards.
+    func clearRange(_ range: DateInterval, excludingEntry entryId: UUID? = nil,
+                    excludingBlock blockId: UUID? = nil) {
+        guard store != nil else { return }
+        let pad: TimeInterval = 86_400
+        let window = DateInterval(start: range.start.addingTimeInterval(-pad),
+                                  end: range.end.addingTimeInterval(pad))
+        let neighbors = (try? store.entries(in: window)) ?? []
+        for action in Overlap.clipEntries(neighbors, excluding: entryId, around: range) {
+            switch action {
+            case .save(let entry): try? store.save(entry)
+            case .delete(let id): try? store.delete(entryId: id)
+            }
+        }
+        let blocks = pendingBlocks.filter { $0.id != blockId }
+        for action in Overlap.clipBlocks(blocks, around: range) {
+            switch action {
+            case .save(let block):
+                try? store.save(block)
+                // If this was the keeper's live block, detach it: the keeper's
+                // copy still has the pre-clip edges and would write them back.
+                keeper?.resolveBlock(id: block.id, through: range.end)
+            case .dismiss(let id):
+                if let block = blocks.first(where: { $0.id == id }) { markDismissed(block, through: range.end) }
+            }
+        }
     }
 
     func resolveIdleGap(keep: Bool, from: Date, to: Date) {
@@ -408,13 +509,28 @@ final class AppState: ObservableObject {
         switchSuggestion = keeper?.switchCandidate
         pendingIdleGap = keeper?.pendingIdleGap
         let now = Date()
-        todayTotal = total(in: workday.dayInterval(for: now), now: now)
-        weekTotal = total(in: workday.weekInterval(for: now), now: now)
+        let week = workday.weekInterval(for: now)
+        // Today's logical day always lies inside the current week interval
+        // (both use the same day-start boundary), so one week query feeds
+        // both totals and the popover chart.
+        let weekEntries = (try? store.entries(in: week)) ?? []
+        todayTotal = total(of: weekEntries, in: workday.dayInterval(for: now), now: now)
+        weekTotal = total(of: weekEntries, in: week, now: now)
+        let cal = workday.calendar
+        let weekStartMidnight = workday.logicalDayMidnight(for: week.start)
+        let days = (0..<7).compactMap {
+            cal.date(byAdding: .day, value: $0, to: weekStartMidnight)
+        }
+        popoverWeekReport = WeekReport(
+            entries: weekEntries, projects: projects, days: days,
+            workday: workday, incrementHours: team?.roundingIncrementHours ?? 0.25,
+            asOf: now, splitAtDayBoundaries: true)
         try? store.pruneObservations(olderThan: now.addingTimeInterval(-30 * 86_400))
     }
 
-    private func total(in interval: DateInterval, now: Date) -> TimeInterval {
-        ((try? store.entries(in: interval)) ?? []).reduce(0) { sum, entry in
+    private func total(of entries: [TimeEntry], in interval: DateInterval,
+                       now: Date) -> TimeInterval {
+        entries.reduce(0) { sum, entry in
             let start = max(entry.start, interval.start)
             let end = min(entry.end ?? now, interval.end)
             return sum + max(0, end.timeIntervalSince(start))

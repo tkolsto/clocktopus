@@ -34,6 +34,19 @@ public struct WorkdayCalendar: Sendable {
         return DateInterval(start: start, end: end)
     }
 
+    /// Exact durations inside the requested logical days, clipping both edges
+    /// and splitting spans at each workday boundary (also for chart ghosts).
+    public func durations(from start: Date, to end: Date, days: [Date]) -> [Date: TimeInterval] {
+        var result: [Date: TimeInterval] = [:]
+        for day in days {
+            let dayStart = calendar.date(byAdding: .hour, value: dayStartHour, to: day)!
+            let dayEnd = calendar.date(byAdding: .day, value: 1, to: dayStart)!
+            let duration = min(end, dayEnd).timeIntervalSince(max(start, dayStart))
+            if duration > 0 { result[day] = duration }
+        }
+        return result
+    }
+
     /// The `[start, end)` interval of the work week (the calendar week of the
     /// logical day, shifted to `dayStartHour`) containing `date`.
     public func weekInterval(for date: Date) -> DateInterval {

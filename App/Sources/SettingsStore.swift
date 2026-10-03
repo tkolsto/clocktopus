@@ -21,6 +21,7 @@ final class SettingsStore {
         static let dayStartHour = "clocktopus.dayStartHour"
         static let switchLead = "clocktopus.switchLeadMinutes"
         static let idleAutoStop = "clocktopus.idleAutoStopMinutes"
+        static let dailyTarget = "clocktopus.dailyTargetHours"
     }
 
     var idleThresholdSeconds: Double? {
@@ -67,6 +68,12 @@ final class SettingsStore {
     var idleAutoStopMinutes: Int? {
         get { defaults.object(forKey: Key.idleAutoStop) as? Int }
         set { setOrClear(newValue, Key.idleAutoStop) }
+    }
+
+    /// 0 means "no target line"; nil falls back to the TOML value / default.
+    var dailyTargetHours: Double? {
+        get { defaults.object(forKey: Key.dailyTarget) as? Double }
+        set { setOrClear(newValue, Key.dailyTarget) }
     }
 
     private func setOrClear(_ value: Any?, _ key: String) {

@@ -23,8 +23,8 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: no.kolsto.clocktopus
         GENERATE_INFOPLIST_FILE: YES
-        MARKETING_VERSION: "1.2"
-        CURRENT_PROJECT_VERSION: "5"
+        MARKETING_VERSION: "1.3"
+        CURRENT_PROJECT_VERSION: "6"
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         INFOPLIST_KEY_LSUIElement: YES   # menubar app: no Dock icon
         INFOPLIST_KEY_NSHumanReadableCopyright: ""
@@ -32,6 +32,9 @@ targets:
         SWIFT_VERSION: "5.10"
         CODE_SIGN_STYLE: Automatic
         ENABLE_HARDENED_RUNTIME: YES
+      configs:
+        Release:
+          CODE_SIGN_INJECT_BASE_ENTITLEMENTS: NO
   ClocktopusTests:
     type: bundle.unit-test
     platform: macOS

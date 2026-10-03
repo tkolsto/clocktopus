@@ -17,11 +17,15 @@ struct PreferencesView: View {
     @State private var switchLeadMinutes = 10
     @State private var idleAutoStopMinutes = 120
     @State private var dayStartHour = 4
+    @State private var dailyTargetHours = 7.5
 
     var body: some View {
         Form {
             Section("Config") {
-                LabeledContent("Personal config", value: AppState.personalConfigURL.path)
+                // "~/…" like the team path below, instead of a full path that
+                // wraps across three lines.
+                LabeledContent("Personal config",
+                               value: NSString(string: AppState.personalConfigURL.path).abbreviatingWithTildeInPath)
                 LabeledContent("Team config", value: state.personal?.teamConfigPath ?? "—")
                 LabeledContent("Employee", value: state.personal?.employee ?? "—")
                 LabeledContent("Rounding",
@@ -104,6 +108,20 @@ struct PreferencesView: View {
                 }
             }
 
+            Section("Week chart") {
+                VStack(alignment: .leading, spacing: 2) {
+                    Stepper(dailyTargetHours == 0
+                            ? "Daily target: off"
+                            : String(format: "Daily target: %.1fh", dailyTargetHours),
+                            value: Binding(get: { dailyTargetHours },
+                                           set: { dailyTargetHours = $0
+                                                  state.setDailyTargetHours($0) }),
+                            in: 0...16, step: 0.5)
+                    Text("Guide line across the popover's week chart — days reaching it read as full. 0 hides the line.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
+
             Section("Permissions") {
                 LabeledContent("Accessibility (window titles)") {
                     if axGranted {
@@ -148,6 +166,7 @@ struct PreferencesView: View {
             switchLeadMinutes = max(2, Int(state.effectiveSwitchLeadMinutes.rounded()))
             idleAutoStopMinutes = max(0, state.effectiveIdleAutoStopMinutes)
             dayStartHour = state.effectiveDayStartHour
+            dailyTargetHours = max(0, state.effectiveDailyTargetHours)
         }
         // Catch an edit the user typed but didn't press Return on.
         .onDisappear { commitAITools() }

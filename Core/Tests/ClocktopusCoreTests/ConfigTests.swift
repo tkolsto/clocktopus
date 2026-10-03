@@ -105,6 +105,21 @@ final class ConfigTests: XCTestCase {
         XCTAssertEqual(team.roundingIncrementHours, 1.0)
     }
 
+    func testDailyTargetHoursParsesAndDefaults() throws {
+        let personal = try ConfigLoader.personal(fromTOML: """
+        employee = "TK"
+        team_config_path = "x"
+        daily_target_hours = 8
+        """)
+        XCTAssertEqual(personal.dailyTargetHours, 8.0)
+
+        let defaulted = try ConfigLoader.personal(fromTOML: """
+        employee = "TK"
+        team_config_path = "x"
+        """)
+        XCTAssertEqual(defaulted.dailyTargetHours, 7.5)
+    }
+
     func testMalformedProjectEntryThrows() {
         let toml = """
         project = [ "oops" ]

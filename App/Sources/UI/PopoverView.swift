@@ -27,11 +27,27 @@ struct PopoverView: View {
             projectList
             Divider().padding(.vertical, 6)
             totals
+            if let report = state.popoverWeekReport {
+                WeekChartView(report: report,
+                              targetHours: state.effectiveDailyTargetHours,
+                              pendingBlocks: state.pendingBlocks,
+                              onSelectDay: { day in
+                    // Chart days are calendar midnights; nudge past the work-day
+                    // boundary so the review window resolves the same logical day.
+                    state.reviewFocusDay = day.addingTimeInterval(
+                        TimeInterval(state.effectiveDayStartHour * 3600 + 60))
+                    openReview()
+                })
+                    .padding(.top, 8)
+            }
             if !state.pendingBlocks.isEmpty { pendingLine }
             footer
         }
         .padding(12)
         .frame(width: 300)
+        // The chart and totals are rebuilt on signal ticks; refresh on open so
+        // a quiet stretch doesn't show minutes-old numbers.
+        .onAppear { state.refreshDerived() }
     }
 
     private var header: some View {
@@ -162,10 +178,15 @@ struct PopoverView: View {
         .monospacedDigit()
     }
 
+    /// Caption for the chart's ghost segments too: the faint stacks above are
+    /// exactly this detected-but-unlogged time.
     private var pendingLine: some View {
-        HStack(spacing: 4) {
+        let detected = state.pendingBlocks.reduce(0) {
+            $0 + $1.end.timeIntervalSince($1.start)
+        }
+        return HStack(spacing: 4) {
             Image(systemName: "questionmark.circle.fill").foregroundStyle(.orange)
-            Text("\(state.pendingBlocks.count) unlogged block\(state.pendingBlocks.count == 1 ? "" : "s")")
+            Text("\(state.pendingBlocks.count) unlogged block\(state.pendingBlocks.count == 1 ? "" : "s") · \(Self.hm(detected))")
             Spacer()
             Button("Review") { openReview() }
                 .buttonStyle(.link)

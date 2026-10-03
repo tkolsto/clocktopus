@@ -6,6 +6,7 @@ struct ClocktopusApp: App {
     @StateObject private var state = AppState()
     @State private var bootstrapped = false
     @State private var engine: SignalEngine?
+    @Environment(\.openWindow) private var openWindow
 
     var body: some Scene {
         MenuBarExtra {
@@ -60,6 +61,14 @@ struct ClocktopusApp: App {
         }
         engine = SignalEngine(state: state)
         engine?.start()
+        // `-clocktopus-open review|preferences`: open a window at launch
+        // (screenshots, scripted demos). Deferred a beat so the scene exists.
+        if let id = UserDefaults.standard.string(forKey: "clocktopus-open"),
+           ["review", "preferences"].contains(id) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                WindowPolicy.shared.present(id: id) { openWindow(id: id) }
+            }
+        }
     }
 
     static func shouldStart(environment: [String: String]) -> Bool {

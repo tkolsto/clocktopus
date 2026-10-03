@@ -83,6 +83,25 @@ final class WeekReportTests: XCTestCase {
         XCTAssertEqual(report.dayExported[wednesday], false)
     }
 
+    func testChartClipsAndDistributesEntriesAtWorkdayAndWeekEdges() {
+        let project = Project(name: "Initech", xledgerProject: "1", xledgerActivity: "DEV")
+        let workday = WorkdayCalendar(dayStartHour: 4, timeZone: TimeZone(secondsFromGMT: 0)!)
+        let monday = workday.calendar.date(from: DateComponents(year: 2026, month: 10, day: 5))!
+        let days = (0..<7).map { workday.calendar.date(byAdding: .day, value: $0, to: monday)! }
+        let entries = [
+            entry(projectId: project.id, start: monday.addingTimeInterval(3.5 * 3600), hours: 1),
+            entry(projectId: project.id, start: monday.addingTimeInterval(27.5 * 3600), hours: 1),
+            TimeEntry(projectId: project.id, start: monday.addingTimeInterval((7 * 24 + 3.5) * 3600), source: .manual),
+        ]
+        let report = WeekReport(entries: entries, projects: [project], days: days, workday: workday,
+                                incrementHours: 0.25, asOf: monday.addingTimeInterval((7 * 24 + 4.5) * 3600),
+                                splitAtDayBoundaries: true)
+        XCTAssertEqual(report.exact[project.id]?[days[0]], 1)
+        XCTAssertEqual(report.exact[project.id]?[days[1]], 0.5)
+        XCTAssertEqual(report.exact[project.id]?[days[6]], 0.5)
+        XCTAssertEqual(report.trackedTotal, 2)
+    }
+
     private func entry(projectId: String, start: Date, hours: Double,
                        exportedAt: Date? = nil) -> TimeEntry {
         TimeEntry(projectId: projectId, start: start,

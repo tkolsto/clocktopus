@@ -33,6 +33,8 @@ struct DayTimelineView: View {
     private static let rightPad: CGFloat = 10
     private static let columnGap: CGFloat = 3
     private static let panelWidth: CGFloat = 280
+    /// Day-content coordinates (scroll-aware) shared by the create gestures.
+    private static let contentSpace = "timeline-content"
 
     private static let timeFormatter: DateFormatter = {
         let f = DateFormatter(); f.dateFormat = "HH:mm"; f.locale = Locale(identifier: "en_US_POSIX")
@@ -47,9 +49,7 @@ struct DayTimelineView: View {
 
     private var dayInterval: DateInterval { state.workday.dayInterval(for: day) }
     private var entries: [TimeEntry] { (try? state.store.entries(in: dayInterval)) ?? [] }
-    private var blocks: [ProvisionalBlock] {
-        state.pendingBlocks.filter { $0.end > $0.start && dayInterval.intersects(DateInterval(start: $0.start, end: $0.end)) }
-    }
+    private var blocks: [ProvisionalBlock] { state.pendingBlocks(in: dayInterval) }
 
     private enum Item: Identifiable {
         case entry(TimeEntry)
@@ -109,6 +109,7 @@ struct DayTimelineView: View {
                             }
                         }
                         .frame(height: Self.hourHeight * 24)
+                        .coordinateSpace(name: Self.contentSpace)
                     }
                     .scrollDisabled(isResizing)
                     .onChange(of: reviewing?.id) { id in
@@ -176,30 +177,36 @@ struct DayTimelineView: View {
         }
         .contentShape(Rectangle())
         // Drag out a box on empty space to create an entry (calendar-style);
-        // a plain click still opens the editor with a default hour. Cards sit
-        // above the grid, so drags starting on an entry never reach this.
-        .gesture(
-            DragGesture(minimumDistance: 0)
-                .onChanged { value in
-                    isResizing = true          // stop the ScrollView stealing the drag
-                    if createAnchor == nil { createAnchor = date(atY: value.startLocation.y) }
-                    let a = createAnchor!, b = date(atY: value.location.y)
-                    createInterval = DateInterval(start: min(a, b), end: max(a, b))
+        // a plain click still opens the editor with a default hour. Logged
+        // entries sit above the grid, so drags starting on one never reach
+        // this; ghost cards carry the same gesture (see `ghostBlock`).
+        .gesture(createGesture(minimumDistance: 0))
+    }
+
+    /// Drag-to-create. On the grid a plain click also counts (opens the editor
+    /// at that hour); on a ghost card a click is the card's own tap, so the
+    /// drag needs some travel before it takes over.
+    private func createGesture(minimumDistance: CGFloat) -> some Gesture {
+        DragGesture(minimumDistance: minimumDistance, coordinateSpace: .named(Self.contentSpace))
+            .onChanged { value in
+                isResizing = true          // stop the ScrollView stealing the drag
+                if createAnchor == nil { createAnchor = date(atY: value.startLocation.y) }
+                let a = createAnchor!, b = date(atY: value.location.y)
+                createInterval = DateInterval(start: min(a, b), end: max(a, b))
+            }
+            .onEnded { value in
+                defer { createAnchor = nil; createInterval = nil; isResizing = false }
+                guard let a = createAnchor else { return }
+                if abs(value.translation.height) < 5 {
+                    if minimumDistance == 0 { creatingAt = CreationAnchor(date: snap(a)) }
+                    return
                 }
-                .onEnded { value in
-                    defer { createAnchor = nil; createInterval = nil; isResizing = false }
-                    guard let a = createAnchor else { return }
-                    if abs(value.translation.height) < 5 {
-                        creatingAt = CreationAnchor(date: snap(a))
-                        return
-                    }
-                    let b = date(atY: value.location.y)
-                    let s = snap(min(a, b))
-                    var e = snap(max(a, b))
-                    if e.timeIntervalSince(s) < Self.minDuration { e = s.addingTimeInterval(Self.minDuration) }
-                    creatingAt = CreationAnchor(date: s, end: e)
-                }
-        )
+                let b = date(atY: value.location.y)
+                let s = snap(min(a, b))
+                var e = snap(max(a, b))
+                if e.timeIntervalSince(s) < Self.minDuration { e = s.addingTimeInterval(Self.minDuration) }
+                creatingAt = CreationAnchor(date: s, end: e)
+            }
     }
 
     // MARK: - Hover (manual hit-test)
@@ -417,6 +424,11 @@ struct DayTimelineView: View {
             .frame(width: frame.w, height: h, alignment: .topLeading)
             .position(x: frame.x + frame.w / 2, y: yOffset(for: start) + h / 2)
             .onTapGesture { reviewing = block }
+            // Ghosts yield to drawing: a drag that starts on one draws a new
+            // entry straight over it (the entry then clips/dismisses the
+            // ghosts it covers), so a day of slivers never has to be
+            // dismissed one by one before you can log what you know you did.
+            .gesture(createGesture(minimumDistance: 6))
             .zIndex(showGrips ? 2 : 0)
             .help(block.evidence)
     }
@@ -602,8 +614,10 @@ struct DayTimelineView: View {
         return Date(timeIntervalSinceReferenceDate: (t / Self.snapSeconds).rounded() * Self.snapSeconds)
     }
 
-    /// Clamp an edge at the nearest neighbour (entry or ghost) so a resize can
-    /// never create an overlap. Edges normally stop at the displayed day, but
+    /// Clamp an edge at the nearest neighbour so a resize can never create an
+    /// overlap. A ghost stops at entries and other ghosts; an entry stops only
+    /// at other entries and may sweep over ghosts, which `clearRange` then
+    /// clips or dismisses. Edges normally stop at the displayed day, but
     /// an entry that already crosses the boundary keeps its true edge draggable
     /// (the old day-edge clamp made grabbing a clipped entry's grip snap its
     /// multi-day start to the day's start hour). Neighbours are fetched from
@@ -620,7 +634,10 @@ struct DayTimelineView: View {
         let window = DateInterval(start: start.addingTimeInterval(-pad),
                                   end: end.addingTimeInterval(pad))
         for e in (try? state.store.entries(in: window)) ?? [] { consider(e.id, e.start, e.end ?? Date()) }
-        for b in state.pendingBlocks where b.end > b.start { consider(b.id, b.start, b.end) }
+        let resizingEntry = entries.contains { $0.id == id }
+        if !resizingEntry {
+            for b in state.pendingBlocks where b.end > b.start { consider(b.id, b.start, b.end) }
+        }
         return (lower, upper)
     }
 }

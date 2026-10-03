@@ -1,0 +1,38 @@
+rounding_increment_hours = 0.25
+
+[[project]]
+name = "Initech"
+xledger_project = "T200001"
+xledger_activity = "DEV"
+dirs = ["~/src/initech*"]
+keywords = ["initech"]
+urls = ["github.com/initech", "initech.atlassian.net"]
+browser_profiles = ["Initech"]
+
+[[project]]
+name = "Globex"
+xledger_project = "T200002"
+xledger_activity = "DEV"
+dirs = ["~/src/globex*"]
+urls = ["github.com/globex-corp", "globex.example"]
+
+[[project]]
+name = "Nautilus"
+xledger_project = "T200003"
+xledger_activity = "OPS"
+dirs = ["~/src/nautilus*"]
+urls = ["nautilus.example"]
+
+[[project]]
+name = "Meetings"
+xledger_project = "T200000"
+xledger_activity = "MEET"
+apps = ["zoom.us", "Google Meet"]
+urls = ["meet.google.com"]
+
+[[project]]
+name = "Side quest"
+xledger_project = "1"
+xledger_activity = "PRIV"
+dirs = ["~/src/sidequest*"]
+private = true

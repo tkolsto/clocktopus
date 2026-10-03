@@ -23,8 +23,11 @@ public struct WeekReport: Sendable {
     public let dayExported: [Date: Bool]
     public let projectTotals: [ProjectTotal]
 
+    /// The export grid keeps entries on their start day to match CSV output.
+    /// Charts can instead split and clip exact hours to the displayed days.
     public init(entries: [TimeEntry], projects: [Project], days: [Date],
-                workday: WorkdayCalendar, incrementHours: Double, asOf: Date) {
+                workday: WorkdayCalendar, incrementHours: Double, asOf: Date,
+                splitAtDayBoundaries: Bool = false) {
         let projectsById = Dictionary(uniqueKeysWithValues: projects.map { ($0.id, $0) })
         let daysSet = Set(days)
         var exact: [String: [Date: Double]] = [:]
@@ -32,13 +35,20 @@ public struct WeekReport: Sendable {
 
         for entry in entries {
             guard let project = projectsById[entry.projectId] else { continue }
-            let day = workday.logicalDayMidnight(for: entry.start)
-            guard daysSet.contains(day) else { continue }
-            if !project.isPrivate, entry.end != nil {
-                closedBillableEntries[day, default: []].append(entry)
+            let durations: [Date: TimeInterval]
+            if splitAtDayBoundaries {
+                durations = workday.durations(from: entry.start, to: entry.end ?? asOf, days: days)
+            } else {
+                let day = workday.logicalDayMidnight(for: entry.start)
+                guard daysSet.contains(day) else { continue }
+                durations = [day: entry.duration(asOf: asOf)]
             }
-            exact[entry.projectId, default: [:]][day, default: 0] +=
-                entry.duration(asOf: asOf) / 3600
+            for (day, duration) in durations {
+                if !project.isPrivate, entry.end != nil {
+                    closedBillableEntries[day, default: []].append(entry)
+                }
+                exact[entry.projectId, default: [:]][day, default: 0] += duration / 3600
+            }
         }
 
         var rounded: [String: [Date: Double]] = [:]
