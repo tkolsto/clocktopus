@@ -190,7 +190,7 @@ final class AppState: ObservableObject {
             let running = try? store.runningEntry()
             if let running {
                 keeper.restore(runningEntry: running)
-            } else if let recent = (try? store.pendingBlocks(asOf: Date()))?.max(by: { $0.end < $1.end }),
+            } else if let recent = (try? store.pendingBlocks())?.max(by: { $0.end < $1.end }),
                       Date().timeIntervalSince(recent.end) < settings.blockStalenessSeconds {
                 // No running timer: continue the most recent still-open block
                 // across this relaunch/reload instead of fragmenting the same
@@ -505,7 +505,7 @@ final class AppState: ObservableObject {
 
     func refreshDerived() {
         runningEntry = try? store.runningEntry()
-        pendingBlocks = (try? store.pendingBlocks(asOf: Date())) ?? []
+        pendingBlocks = (try? store.pendingBlocks()) ?? []
         switchSuggestion = keeper?.switchCandidate
         pendingIdleGap = keeper?.pendingIdleGap
         let now = Date()

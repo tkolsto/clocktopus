@@ -142,13 +142,10 @@ public final class Store {
         }
     }
 
-    public func pendingBlocks(asOf now: Date) throws -> [ProvisionalBlock] {
-        let cutoff = now.addingTimeInterval(-7 * 86_400).timeIntervalSince1970
-        return try dbQueue.write { db in
-            try db.execute(sql: """
-                UPDATE provisionalBlock SET status = 'expired'
-                WHERE status = 'pending' AND "end" < ?
-                """, arguments: [cutoff])
+    /// Every block still awaiting review. Blocks never age out on their own:
+    /// only the user logging or dismissing one takes it off this list.
+    public func pendingBlocks() throws -> [ProvisionalBlock] {
+        try dbQueue.read { db in
             return try Row.fetchAll(db, sql: """
                 SELECT * FROM provisionalBlock WHERE status = 'pending' ORDER BY start
                 """).map { row in

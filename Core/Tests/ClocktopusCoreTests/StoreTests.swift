@@ -40,18 +40,18 @@ final class StoreTests: XCTestCase {
         XCTAssertEqual(hits.count, 1)
     }
 
-    func testPendingBlocksAutoExpireAfterSevenDays() throws {
+    func testPendingBlocksNeverExpireOnTheirOwn() throws {
+        // Unreviewed suggestions must stay reviewable however old they get:
+        // a silent age-out hid weeks of unlogged time after a long break.
         let old = ProvisionalBlock(guessedProjectId: "initech", start: t0, end: t0.addingTimeInterval(600),
                                    confidence: 0.8, evidence: "old")
         let fresh = ProvisionalBlock(guessedProjectId: "initech",
-                                     start: t0.addingTimeInterval(8 * 86_400),
-                                     end: t0.addingTimeInterval(8 * 86_400 + 600),
+                                     start: t0.addingTimeInterval(90 * 86_400),
+                                     end: t0.addingTimeInterval(90 * 86_400 + 600),
                                      confidence: 0.8, evidence: "fresh")
         try store.save(old)
         try store.save(fresh)
-        let now = t0.addingTimeInterval(8 * 86_400 + 3600)
-        let pending = try store.pendingBlocks(asOf: now)
-        XCTAssertEqual(pending.map(\.id), [fresh.id])
+        XCTAssertEqual(try store.pendingBlocks().map(\.id), [old.id, fresh.id])
     }
 
     func testObservationPruning() throws {
